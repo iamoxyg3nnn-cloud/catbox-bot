@@ -46,7 +46,7 @@ async function allocateName(originalName, mime) {
 
 // Send a staged upload to Discord, record its metadata, then remove the
 // staging file. There is no permanent local byte storage.
-async function commitUpload(context, tmpPath, originalName, mime, size, expiresAt = null) {
+async function commitUpload(context, tmpPath, originalName, mime, size, expiresAt = null, idempotencyKey = null) {
   const name = await allocateName(originalName, mime);
   const sha256 = await hashFile(tmpPath);
   const stored = await getStorage().upload({
@@ -54,6 +54,7 @@ async function commitUpload(context, tmpPath, originalName, mime, size, expiresA
     originalName: sanitizeOriginalName(originalName),
     mime: mime || mimeFor(name),
     size,
+    idempotencyKey,
   });
   await db.recordFile({
     name,
@@ -82,14 +83,24 @@ function asyncRequested(req) {
 
 async function acceptAsync(req, details) {
   const { enqueue } = require('./jobs');
-  const jobId = await enqueue({
-    stagedPath: details.stagedPath,
-    ownerHash: ownerFromReq(req),
-    originalName: details.originalName,
-    mime: details.mime,
-    size: details.size,
-    expiresAt: details.expiresAt || null,
-  });
+  let jobId;
+  try {
+    jobId = await enqueue({
+      stagedPath: details.stagedPath,
+      ownerHash: ownerFromReq(req),
+      originalName: details.originalName,
+      mime: details.mime,
+      size: details.size,
+      expiresAt: details.expiresAt || null,
+    });
+  } catch (err) {
+    // No job owns the body yet; remove it before returning an error.
+    await fs.promises.unlink(details.stagedPath).catch(() => {});
+    throw err;
+  }
+  // From here on the job runner owns the staged body, even if the client
+  // disconnects before it receives the 202 response.
+  if (typeof req.releaseStaged === 'function') req.releaseStaged();
   return {
     job_id: jobId,
     status: 'queued',

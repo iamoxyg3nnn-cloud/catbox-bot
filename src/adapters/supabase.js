@@ -308,6 +308,21 @@ async function requeueJob(jobId) {
   await patch('upload_jobs', { job_id: `eq.${jobId}` }, { status: 'queued', updated_at: Date.now() });
 }
 
+// Terminal failure for cases where a retry cannot help (missing staged body).
+async function failJob(jobId, error) {
+  const rows = await patch('upload_jobs', { job_id: `eq.${jobId}` }, {
+    status: 'failed',
+    last_error: error || 'Upload failed.',
+    updated_at: Date.now(),
+  });
+  return rows[0] || null;
+}
+
+async function activeStagedPaths() {
+  const rows = await rawSelect('upload_jobs', 'status=in.(queued,uploading)&select=staged_path');
+  return rows.map(row => row.staged_path).filter(Boolean);
+}
+
 /* ---------------- nodes ---------------- */
 
 async function upsertNode({
@@ -376,7 +391,7 @@ module.exports = {
   createAlbum, getAlbum, deleteAlbum, setAlbumMeta, albumFileNames, albumFiles,
   setAlbumFiles, addToAlbum, removeFromAlbum, albumCount, albumsByOwner,
   addMessage,
-  createJob, getJob, claimJob, finishJob, staleJobs, requeueJob,
+  createJob, getJob, claimJob, finishJob, failJob, staleJobs, requeueJob, activeStagedPaths,
   upsertNode, getNode, listNodes,
   addJournal, unresolvedJournal, resolveJournal, journalStats,
 };

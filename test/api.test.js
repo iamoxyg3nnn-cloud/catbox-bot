@@ -155,6 +155,73 @@ test('async upload returns a job and resolves to a share URL', async () => {
   assert.equal(await page.text(), 'async body');
 });
 
+test('resumable chunk upload rejects bad offsets and commits only once', async () => {
+  const created = await fetch(`${BASE}/api/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ originalName: 'chunked.txt', mime: 'text/plain', size: 11 }),
+  });
+  assert.equal(created.status, 201);
+  const session = await created.json();
+  assert.equal(session.chunkSize, 4 * 1024 * 1024);
+  const headers = token => ({ 'Content-Type': 'application/octet-stream', 'X-Upload-Token': token });
+
+  const wrongOffset = await fetch(`${BASE}/api/uploads/${session.uploadId}`, {
+    method: 'PUT',
+    headers: { ...headers(session.token), 'X-Upload-Offset': '5' },
+    body: 'hello',
+  });
+  assert.equal(wrongOffset.status, 409);
+  assert.equal((await wrongOffset.json()).received, 0);
+
+  const first = await fetch(`${BASE}/api/uploads/${session.uploadId}`, {
+    method: 'PUT',
+    headers: { ...headers(session.token), 'X-Upload-Offset': '0' },
+    body: 'hello worl',
+  });
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).received, 10);
+
+  const probe = await fetch(`${BASE}/api/uploads/${session.uploadId}`, {
+    headers: { 'X-Upload-Token': session.token },
+  });
+  assert.equal((await probe.json()).received, 10);
+
+  const oversized = await fetch(`${BASE}/api/uploads/${session.uploadId}`, {
+    method: 'PUT',
+    headers: { ...headers(session.token), 'X-Upload-Offset': '10' },
+    body: 'this exceeds the session',
+  });
+  assert.equal(oversized.status, 413);
+
+  const last = await fetch(`${BASE}/api/uploads/${session.uploadId}`, {
+    method: 'PUT',
+    headers: { ...headers(session.token), 'X-Upload-Offset': '10' },
+    body: 'd',
+  });
+  assert.equal(last.status, 200);
+  assert.equal((await last.json()).complete, true);
+
+  const complete = () => fetch(`${BASE}/api/uploads/${session.uploadId}/complete`, {
+    method: 'POST', headers: { 'X-Upload-Token': session.token },
+  });
+  const accepted = await complete();
+  assert.equal(accepted.status, 202);
+  const job = await accepted.json();
+  const retry = await complete();
+  assert.equal((await retry.json()).job_id, job.job_id);
+
+  let status;
+  for (let i = 0; i < 40; i++) {
+    status = await fetch(`${BASE}${job.status_url}`).then(r => r.json());
+    if (status.status !== 'queued' && status.status !== 'uploading') break;
+    await wait(100);
+  }
+  assert.equal(status.status, 'ready', status.error);
+  const file = await fetch(status.url);
+  assert.equal(await file.text(), 'hello world');
+});
+
 test('internal metadata endpoint requires the shared secret', async () => {
   const payload = {
     name: 'internal1.txt', owner_hash: null, original_name: 'internal.txt',

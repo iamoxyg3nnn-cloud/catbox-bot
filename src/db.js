@@ -467,6 +467,24 @@ function requeueJob(jobId) {
   ).run(Date.now(), jobId);
 }
 
+// Give up on a job immediately when retrying can never succeed (for example
+// the staged body was deleted by a temp-file sweep or a previous crash).
+function failJob(jobId, error) {
+  const job = getJob(jobId);
+  if (!job) return null;
+  getDb().prepare(
+    "UPDATE upload_jobs SET status = 'failed', last_error = ?, updated_at = ? WHERE job_id = ?"
+  ).run(error || 'Upload failed.', Date.now(), jobId);
+  return getJob(jobId);
+}
+
+// Staged paths that must be preserved by the orphan sweep.
+function activeStagedPaths() {
+  return getDb().prepare(
+    "SELECT staged_path FROM upload_jobs WHERE status IN ('queued', 'uploading')"
+  ).all().map(row => row.staged_path).filter(Boolean);
+}
+
 /* ---------------- upload journal ---------------- */
 // Records "Discord succeeded but metadata failed" events so a sweep can
 // reconcile them: record the file metadata, or delete the orphan message.
@@ -509,7 +527,7 @@ module.exports = {
   createAlbum, getAlbum, deleteAlbum, setAlbumMeta, albumFileNames, albumFiles,
   setAlbumFiles, addToAlbum, removeFromAlbum, albumCount, albumsByOwner,
   addMessage,
-  createJob, getJob, claimJob, finishJob, staleJobs, requeueJob,
+  createJob, getJob, claimJob, finishJob, failJob, staleJobs, requeueJob, activeStagedPaths,
   upsertNode, getNode, listNodes,
   addJournal, unresolvedJournal, resolveJournal, journalStats,
 };

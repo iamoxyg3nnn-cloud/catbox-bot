@@ -11,11 +11,12 @@
 // SQLite adapter and the asynchronous Supabase/PostgREST adapter.
 
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const db = require('./dbAdapter');
 const { config } = require('./config');
 
-const STALE_AFTER_MS = 5 * 60 * 1000;
+const STALE_AFTER_MS = config.uploadRecovery.staleAfterMs;
 const CONCURRENCY = Math.max(1, parseInt(process.env.UPLOAD_JOB_CONCURRENCY || '4', 10));
 
 const JOURNAL_SWEEP_MS = 60 * 1000;
@@ -26,6 +27,8 @@ let active = 0;
 let pumping = false;
 let pollTimer = null;
 let journalTimer = null;
+let recoveryTimer = null;
+let tempTimer = null;
 
 async function enqueue(details) {
   const jobId = crypto.randomBytes(12).toString('hex');
@@ -64,7 +67,12 @@ function publicJob(row, req) {
 async function processJob(job) {
   try {
     if (!fs.existsSync(job.staged_path)) {
-      throw new Error('Staged upload is missing; it may have been cleaned up.');
+      // The body is gone (runner restart or temp sweep). Retrying cannot bring
+      // it back, so fail terminally instead of burning the retry budget.
+      throw Object.assign(
+        new Error('The upload body was lost before it reached storage. Please upload the file again.'),
+        { terminal: true }
+      );
     }
     // Lazy require avoids a cycle: api.js requires jobs.js only when accepting
     // an async request, by which time this module is fully loaded.
@@ -75,9 +83,14 @@ async function processJob(job) {
       job.original_name,
       job.mime,
       job.size,
-      job.expires_at
+      job.expires_at,
+      job.job_id
     );
-    const file = await db.getFile(name);
+    // commitUpload already recorded the metadata. A transient lookup failure
+    // here must not turn a successful upload into a retry (and a duplicate
+    // Discord message).
+    // The SQLite adapter is synchronous; Supabase returns a promise.
+    const file = await Promise.resolve().then(() => db.getFile(name)).catch(() => null);
     await db.finishJob(job.job_id, {
       name,
       botId: file && file.bot_id,
@@ -85,7 +98,9 @@ async function processJob(job) {
     });
   } catch (err) {
     console.error(`job ${job.job_id} failed:`, err.message);
-    const updated = await db.finishJob(job.job_id, { error: err.message });
+    const updated = err.terminal
+      ? await db.failJob(job.job_id, err.message)
+      : await db.finishJob(job.job_id, { error: err.message });
     if (updated && updated.status === 'failed') {
       await fs.promises.unlink(job.staged_path).catch(() => {});
     }
@@ -145,26 +160,78 @@ async function reconcileJournal({ force = false } = {}) {
   }
 }
 
+// A runner that dies mid-upload leaves its jobs in `uploading`. A one-shot
+// recovery at boot is not enough: the process can lose a single pump tick and
+// stall forever. Sweep continuously so those jobs are retried promptly.
+async function requeueStaleJobs() {
+  try {
+    const stale = await db.staleJobs(STALE_AFTER_MS);
+    for (const job of stale) {
+      console.error(`job ${job.job_id} was abandoned; requeueing`);
+      await db.requeueJob(job.job_id);
+    }
+  } catch (err) {
+    console.error('stale job sweep failed:', err.message);
+  }
+}
+
+// Delete tmp files that no live request or queued job still needs. mtime is
+// refreshed while a body is being written, so active uploads are never swept
+// even when a client is very slow.
+async function sweepTempFiles() {
+  const cutoff = Date.now() - config.uploadRecovery.tempMaxAgeMs;
+  let entries, protectedPaths;
+  try {
+    entries = await fs.promises.readdir(config.tmpDir, { withFileTypes: true });
+    protectedPaths = new Set(await db.activeStagedPaths());
+  } catch (err) {
+    console.error('temp sweep could not inspect state:', err.message);
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const full = path.join(config.tmpDir, entry.name);
+    if (protectedPaths.has(full)) continue;
+    try {
+      const stat = await fs.promises.stat(full);
+      if (stat.mtimeMs <= cutoff) await fs.promises.unlink(full);
+    } catch (err) {
+      if (err.code !== 'ENOENT') console.error('temp sweep skipped a file:', err.message);
+    }
+  }
+}
+
 async function start() {
   if (started) return;
   started = true;
-  // Recover jobs abandoned by a previous process.
-  const stale = await db.staleJobs(STALE_AFTER_MS);
-  for (const job of stale) await db.requeueJob(job.job_id);
+  await requeueStaleJobs();
+  await sweepTempFiles();
   kick();
   reconcileJournal().catch(err => console.error('initial journal sweep failed:', err));
   journalTimer = setInterval(() => {
     reconcileJournal().catch(err => console.error('journal sweep failed:', err));
   }, JOURNAL_SWEEP_MS);
   journalTimer.unref();
+  recoveryTimer = setInterval(() => {
+    requeueStaleJobs().catch(err => console.error('recovery sweep failed:', err));
+  }, config.uploadRecovery.sweepMs);
+  recoveryTimer.unref();
+  tempTimer = setInterval(() => {
+    sweepTempFiles().catch(err => console.error('temp sweep failed:', err));
+  }, config.uploadRecovery.tempSweepMs);
+  tempTimer.unref();
 }
 
 function stop() {
   started = false;
   if (pollTimer) clearInterval(pollTimer);
-  pollTimer = null;
   if (journalTimer) clearInterval(journalTimer);
+  if (recoveryTimer) clearInterval(recoveryTimer);
+  if (tempTimer) clearInterval(tempTimer);
+  pollTimer = null;
   journalTimer = null;
+  recoveryTimer = null;
+  tempTimer = null;
 }
 
 module.exports = { enqueue, publicJob, start, stop, reconcileJournal };

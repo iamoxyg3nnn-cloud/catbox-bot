@@ -166,10 +166,19 @@ class DiscordStorage {
     throw new Error('Discord request failed.');
   }
 
-  buildMultipart(filePath, originalName, mime) {
+  buildMultipart(filePath, originalName, mime, idempotencyKey) {
     const boundary = `----catbox${crypto.randomBytes(12).toString('hex')}`;
     const filename = safeFilename(originalName);
-    const payload = JSON.stringify({ content: '', allowed_mentions: { parse: [] } });
+    const message = { content: '', allowed_mentions: { parse: [] } };
+    // Discord dedupes message creation by nonce for a few minutes. Supplying a
+    // stable key for a queued job makes an at-least-once retry safe: if the
+    // first upload reached Discord but the metadata write failed, the retry
+    // gets the existing message instead of creating a duplicate attachment.
+    if (idempotencyKey) {
+      message.nonce = String(idempotencyKey).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 25);
+      message.enforce_nonce = true;
+    }
+    const payload = JSON.stringify(message);
     const preamble = Buffer.from(
       `--${boundary}\r\n` +
       'Content-Disposition: form-data; name="payload_json"\r\n' +
@@ -192,9 +201,9 @@ class DiscordStorage {
     };
   }
 
-  async upload({ filePath, originalName, mime }) {
+  async upload({ filePath, originalName, mime, idempotencyKey }) {
     const bot = this.pickBot();
-    const { body, contentType } = this.buildMultipart(filePath, originalName, mime);
+    const { body, contentType } = this.buildMultipart(filePath, originalName, mime, idempotencyKey);
     const response = await this.request(
       bot,
       'POST',

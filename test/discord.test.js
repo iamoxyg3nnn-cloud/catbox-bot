@@ -70,6 +70,31 @@ test('upload posts a bot-authenticated multipart message and stores metadata', a
   }
 });
 
+test('upload sends a stable nonce so retries cannot duplicate a message', async () => {
+  const originalFetch = global.fetch;
+  const staged = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'discord-test-')), 'nonce.txt');
+  fs.writeFileSync(staged, 'nonce body');
+  let multipart = '';
+  global.fetch = async (url, init) => {
+    for await (const chunk of init.body) multipart += chunk.toString();
+    return response(200, { id: '1001', attachments: [{ id: '779', url: 'https://cdn.test/nonce' }] });
+  };
+  try {
+    const storage = new DiscordStorage(config);
+    await storage.upload({
+      filePath: staged,
+      originalName: 'nonce.txt',
+      mime: 'text/plain',
+      idempotencyKey: 'job-12345678901234567890',
+    });
+    assert.match(multipart, /"nonce":"job-12345678901234567890"/);
+    assert.match(multipart, /"enforce_nonce":true/);
+  } finally {
+    global.fetch = originalFetch;
+    fs.rmSync(path.dirname(staged), { recursive: true, force: true });
+  }
+});
+
 test('429 responses are retried using retry_after', async () => {
   let attempt = 0;
   const originalFetch = global.fetch;

@@ -14,6 +14,7 @@ const multer = require('multer');
 const { config, publicUrl } = require('./src/config');
 const { getStorage } = require('./src/storage');
 const jobs = require('./src/jobs');
+const uploadSessions = require('./src/uploadSessions');
 const db = require('./src/dbAdapter');
 const util = require('./src/util');
 const api = require('./src/api');
@@ -62,7 +63,42 @@ const upload = multer({
   limits: { fileSize: config.maxFileSize, files: 1 },
 });
 
+// Multer writes a partial temp file before our handler runs. A client that
+// disconnects mid-body — or a rejected/oversized file — would otherwise leave
+// that orphan behind forever. Release the staged path once a job owns it.
+function safeUpload(req, res, next) {
+  upload.single('fileToUpload')(req, res, err => {
+    const staged = (err && err.file && err.file.path) || (req.file && req.file.path);
+    const drop = () => { if (staged) fs.promises.unlink(staged).catch(() => {}); };
+    if (err) {
+      drop();
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).type('text/plain').send(`That file is larger than the ${util.humanSize(config.maxFileSize)} limit.`);
+      }
+      if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+        return res.status(400).type('text/plain').send('No file was supplied.');
+      }
+      console.error('multipart error:', err);
+      return res.status(400).type('text/plain').send('The upload could not be read.');
+    }
+    if (staged) {
+      let released = false;
+      req.releaseStaged = () => { released = true; };
+      const cleanup = () => { if (!released) drop(); };
+      req.on('aborted', cleanup);
+      res.on('close', () => { if (!res.writableFinished) cleanup(); });
+    }
+    next();
+  });
+}
+
 app.use(auth.sessionMiddleware);
+
+// Short, resumable browser uploads. The signed token is a capability: each
+// chunk and the final commit are independently authenticated and short-lived.
+uploadSessions.register(app, {
+  enqueue: details => jobs.enqueue(details),
+});
 
 // Browser experience and static assets.
 app.use(express.static(path.join(__dirname, 'public')));
@@ -285,7 +321,7 @@ app.get('/api/albums/:short', asyncRoute(async (req, res) => {
 
 // Multipart parsing first (file uploads); urlencoded bodies were parsed
 // by the global middleware above for the form-style request types.
-app.all('/user/api.php', upload.single('fileToUpload'), (req, res) => {
+app.all('/user/api.php', safeUpload, (req, res) => {
   api.handleApi(req, res).catch(err => {
     console.error('api error:', err);
     if (!res.headersSent) res.status(500).type('text/plain').send('Internal server error.');
@@ -404,7 +440,7 @@ app.post('/do_contact.php', asyncRoute(async (req, res) => {
   res.type('text/plain; charset=utf-8').send('Thanks. Your message has been recorded.');
 }));
 
-app.all('/litterbox/api.php', upload.single('fileToUpload'), (req, res) => {
+app.all('/litterbox/api.php', safeUpload, (req, res) => {
   litterboxUpload(req, res).catch(err => {
     console.error('litterbox error:', err);
     if (!res.headersSent) res.status(500).type('text/plain').send('Internal server error.');
@@ -474,9 +510,13 @@ setInterval(() => {
 if (require.main === module) {
   db.getDb();
   jobs.start().catch(err => console.error('job runner failed to start:', err));
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     console.log(`File sharing service listening on http://localhost:${config.port}`);
   });
+  // Never let a half-sent body hold a connection indefinitely. The browser
+  // watchdog reports a stalled transfer long before this ceiling is reached.
+  server.headersTimeout = 60_000;
+  server.requestTimeout = config.uploadRecovery.bodyTimeoutMs;
 }
 
 module.exports = { app };

@@ -95,6 +95,19 @@ const config = {
 
   // Coarse per-IP upload throttle (window -> max upload requests).
   rateLimit: { windowMs: 60 * 1000, maxUploads: 40 },
+
+  // Recovery knobs for uploads that are interrupted mid-flight. A job left in
+  // `uploading` past staleAfterMs is assumed abandoned by a dead process and is
+  // requeued; orphaned temp files older than tempMaxAgeMs are swept.
+  uploadRecovery: {
+    staleAfterMs: parseInt(process.env.STALE_JOB_AFTER_MS || '180000', 10),
+    sweepMs: parseInt(process.env.JOB_RECOVERY_SWEEP_MS || '30000', 10),
+    tempMaxAgeMs: parseInt(process.env.TEMP_MAX_AGE_MS || '1800000', 10),
+    tempSweepMs: parseInt(process.env.TEMP_SWEEP_MS || '600000', 10),
+    // Wall-clock ceiling for receiving one HTTP upload body. The browser also
+    // runs an inactivity watchdog so a stalled client does not wait this long.
+    bodyTimeoutMs: parseInt(process.env.UPLOAD_BODY_TIMEOUT_MS || '600000', 10),
+  },
 };
 
 // Build an absolute public URL for a site-relative path.

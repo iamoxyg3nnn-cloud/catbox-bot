@@ -12,6 +12,82 @@
     .then(response => response.ok ? response.json() : null)
     .then(cfg => { if (cfg && Number(cfg.maxFileSize) > 0) MAX_UPLOAD_BYTES = Number(cfg.maxFileSize); })
     .catch(() => {});
+
+  // Short, resumable chunk uploader. Each request is at most 4 MiB and has its
+  // own deadline, so a slow link cannot hit the edge's 125 s read timeout and
+  // a dropped chunk resumes from the byte count the server reports.
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  function withDeadline(signal, ms) {
+    if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, AbortSignal.timeout(ms)]);
+    return signal;
+  }
+  async function chunkedUpload(file, { userhash, time, signal, onProgress }) {
+    const init = await fetch('/api/uploads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        originalName: file.name,
+        mime: file.type || 'application/octet-stream',
+        size: file.size,
+        userhash: userhash || undefined,
+        time: time || undefined,
+      }),
+      signal: withDeadline(signal, 15_000),
+    });
+    if (!init.ok) throw new Error((await init.text()).trim() || 'Could not start the upload.');
+    const session = await init.json();
+    let received = 0;
+    while (received < session.size) {
+      const probe = await fetch(`/api/uploads/${session.uploadId}`, {
+        headers: { 'X-Upload-Token': session.token },
+        signal: withDeadline(signal, 15_000),
+      });
+      if (!probe.ok) throw new Error('This upload session expired. Please try again.');
+      received = (await probe.json()).received;
+      if (received >= session.size) break;
+
+      const end = Math.min(received + (session.chunkSize || 4 * 1024 * 1024), session.size);
+      const chunk = file.slice(received, end);
+      let advanced = false;
+      for (let attempt = 0; attempt < 3 && !advanced; attempt++) {
+        try {
+          const response = await fetch(`/api/uploads/${session.uploadId}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              'X-Upload-Token': session.token,
+              'X-Upload-Offset': String(received),
+            },
+            body: chunk,
+            signal: withDeadline(signal, 60_000),
+          });
+          if (response.status === 409) {
+            // Another attempt already wrote this chunk; resume at the offset
+            // the server has instead of duplicating bytes.
+            received = (await response.json()).received;
+            advanced = true;
+            break;
+          }
+          if (!response.ok) throw new Error((await response.text()).trim() || 'A chunk could not be uploaded.');
+          received = (await response.json()).received;
+          advanced = true;
+        } catch (error) {
+          if (signal.aborted) throw error;
+          if (attempt === 2) throw new Error('The upload stalled. Check your connection and try again.');
+          await sleep(400 * 2 ** attempt);
+        }
+      }
+      onProgress?.(received, session.size);
+    }
+    const done = await fetch(`/api/uploads/${session.uploadId}/complete`, {
+      method: 'POST',
+      headers: { 'X-Upload-Token': session.token },
+      signal: withDeadline(signal, 15_000),
+    });
+    if (done.status !== 202) throw new Error((await done.text()).trim() || 'Could not finish the upload.');
+    onProgress?.(session.size, session.size);
+    return done.json();
+  }
   const icons = {
     cat: '<path d="m4 8 1.3-4 3.2 2h3L14.7 4 16 8v5a6 6 0 0 1-12 0z"/><path d="M8 12h.01M12 12h.01M9 16h2"/>',
     upload: '<path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M20 16v4H4v-4"/>',
@@ -384,86 +460,45 @@
       triggers().forEach(button => { button.disabled = true; });
       dropzone.setAttribute('aria-busy', 'true');
 
-      const body = new FormData();
-      body.append('reqtype', 'fileupload');
-      body.append('fileToUpload', file);
-      const userhash = getCookie('userhash');
-      if (userhash) body.append('userhash', userhash);
-      request = new XMLHttpRequest();
-      request.open('POST', '/user/api.php');
-      request.setRequestHeader('X-Catbox-Async', '1');
-      request.upload.onprogress = event => {
-        if (!event.lengthComputable) return;
-        const percent = Math.round(event.loaded / event.total * 100);
-        progressBar.style.width = `${percent}%`;
-        progress.setAttribute('aria-valuenow', String(percent));
-        status.textContent = `Uploading · ${percent}%`;
-      };
-      request.onload = async () => {
-        progress.hidden = true;
-        if (request.status === 202) {
-          try {
-            const job = JSON.parse(request.responseText);
-            status.textContent = 'Queued for upload…';
-            const url = await pollJob(job.status_url, state => {
-              status.textContent = state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…';
-            });
-            const name = new URL(url, location.origin).pathname.split('/').pop();
-            data.files.unshift({ name, originalName: file.name, mime: file.type || 'application/octet-stream', size: file.size, uploadedAt: Date.now(), url });
-            $('#file-count').textContent = data.files.length;
-            renderFileList(data.files);
-            applySearch();
-            status.textContent = 'Upload complete. Your file is now in My files.';
-            status.dataset.kind = 'success';
-            result.innerHTML = `<div class="result-link"><a href="${esc(url)}" target="_blank" rel="noopener">Open uploaded file</a><button class="classic-copy" type="button" data-upload-copy>Copy link</button></div>`;
-            $('[data-upload-copy]', result).addEventListener('click', () => copyText(url));
-          } catch (error) {
-            status.textContent = error.message || 'The upload could not be completed.';
-            status.dataset.kind = 'error';
-          } finally {
-            finish();
-          }
-          return;
-        }
-        if (request.status < 200 || request.status >= 300) {
-          status.textContent = request.responseText || 'That upload didn’t work. Please try again.';
-          status.dataset.kind = 'error';
-          finish();
-          return;
-        }
-
-        const url = request.responseText.trim();
-        const name = new URL(url, location.origin).pathname.split('/').pop();
-        data.files.unshift({ name, originalName: file.name, mime: file.type || 'application/octet-stream', size: file.size, uploadedAt: Date.now(), url });
-        $('#file-count').textContent = data.files.length;
-        renderFileList(data.files);
-        applySearch();
-        status.textContent = 'Upload complete. Your file is now in My files.';
-        status.dataset.kind = 'success';
-        result.innerHTML = `<div class="result-link"><a href="${esc(url)}" target="_blank" rel="noopener">Open uploaded file</a><button class="classic-copy" type="button" data-upload-copy>Copy link</button></div>`;
-        $('[data-upload-copy]', result).addEventListener('click', () => copyText(url));
-        finish();
-      };
-      request.onerror = () => {
-        progress.hidden = true;
-        status.textContent = 'Could not reach the server. Please try again.';
-        status.dataset.kind = 'error';
-        finish();
-      };
-      request.onabort = () => {
-        progress.hidden = true;
-        status.textContent = 'Upload cancelled.';
-        status.dataset.kind = 'error';
-        finish();
-      };
+      const controller = new AbortController();
+      request = controller;
       input.value = '';
-      try { request.send(body); }
-      catch {
-        progress.hidden = true;
-        status.textContent = 'Could not start the upload. Please try again.';
-        status.dataset.kind = 'error';
-        finish();
-      }
+      result.innerHTML = '<button class="button button-quiet button-small" type="button" data-cancel-upload>Cancel upload</button>';
+      result.querySelector('[data-cancel-upload]').onclick = () => controller.abort();
+      (async () => {
+        try {
+          const job = await chunkedUpload(file, {
+            userhash: getCookie('userhash'),
+            signal: controller.signal,
+            onProgress: (sent, total) => {
+              const percent = Math.round(sent / total * 100);
+              progressBar.style.width = `${percent}%`;
+              progress.setAttribute('aria-valuenow', String(percent));
+              status.textContent = `Uploading · ${percent}%`;
+            },
+          });
+          progress.hidden = true;
+          status.textContent = 'Queued for upload…';
+          const url = await pollJob(job.status_url, state => {
+            status.textContent = state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…';
+          });
+          const name = new URL(url, location.origin).pathname.split('/').pop();
+          data.files.unshift({ name, originalName: file.name, mime: file.type || 'application/octet-stream', size: file.size, uploadedAt: Date.now(), url });
+          $('#file-count').textContent = data.files.length;
+          renderFileList(data.files);
+          applySearch();
+          status.textContent = 'Upload complete. Your file is now in My files.';
+          status.dataset.kind = 'success';
+          result.innerHTML = `<div class="result-link"><a href="${esc(url)}" target="_blank" rel="noopener">Open uploaded file</a><button class="classic-copy" type="button" data-upload-copy>Copy link</button></div>`;
+          $('[data-upload-copy]', result).addEventListener('click', () => copyText(url));
+        } catch (error) {
+          progress.hidden = true;
+          status.textContent = controller.signal.aborted ? 'Upload cancelled.' : (error.message || 'The upload could not be completed.');
+          status.dataset.kind = 'error';
+        } finally {
+          finish();
+        }
+      })();
 
       function finish() {
         request = null;
@@ -471,6 +506,7 @@
         $('#library-upload-close').disabled = false;
         triggers().forEach(button => { button.disabled = false; });
         dropzone.removeAttribute('aria-busy');
+        result.querySelector('[data-cancel-upload]')?.remove();
       }
     }
 
@@ -522,18 +558,39 @@
   function getCookie(name) { return document.cookie.split('; ').find(cookie => cookie.startsWith(`${name}=`))?.split('=').slice(1).join('=') || ''; }
 
   // Follow a 202 job response until the background Discord upload finishes.
+  // Each probe is time-bounded and transient failures are retried with backoff,
+  // so a blip in the status endpoint cannot leave the UI spinning forever.
   async function pollJob(statusUrl, onUpdate) {
     const deadline = Date.now() + 5 * 60 * 1000;
+    let failures = 0;
     while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 700));
-      const response = await fetch(statusUrl, { cache: 'no-store' });
-      if (!response.ok) throw new Error('Could not check the upload status. Please try again.');
-      const job = await response.json();
-      if (job.status === 'ready') return job.url;
-      if (job.status === 'failed') throw new Error(job.error || 'The upload could not be completed.');
-      onUpdate?.(job.status);
+      await new Promise(resolve => setTimeout(resolve, 700 + failures * 600));
+      let response;
+      try {
+        response = await fetch(statusUrl, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+      } catch {
+        if (++failures >= 5) throw new Error('Lost contact with the upload status service. Check your connection and try again.');
+        continue;
+      }
+      if (response.status === 404) throw new Error('We lost track of this upload. Please upload the file again.');
+      if (!response.ok) {
+        if (++failures >= 5) throw new Error('Could not check the upload status. Please try again.');
+        continue;
+      }
+      let job;
+      try { job = await response.json(); }
+      catch {
+        if (++failures >= 5) throw new Error('Could not read the upload status. Please try again.');
+        continue;
+      }
+      failures = 0;
+      if (job.status === 'ready' && job.url) return job.url;
+      if (job.status === 'failed' || job.status === 'dead') {
+        throw new Error(job.error || 'The upload could not be completed. Please try again.');
+      }
+      onUpdate?.(job.status, job.attempts);
     }
-    throw new Error('This upload is taking longer than expected. Try refreshing the page in a moment.');
+    throw new Error('This upload is taking longer than expected. Your file may still finish in the background — refresh My files in a moment.');
   }
   async function copyText(text) {
     try {
@@ -588,41 +645,44 @@
       dropzone?.classList.add('is-uploading');
       dropzone?.setAttribute('aria-busy', 'true');
       fileName.textContent = file.name; result.innerHTML = ''; setStatus('Uploading…');
-      const form = new FormData(); form.append('reqtype', 'fileupload'); form.append('fileToUpload', file);
       input.value = '';
-      if (isLitterbox) form.append('time', $('#expiry').value);
-      const userhash = getCookie('userhash'); if (!isLitterbox && userhash) form.append('userhash', userhash);
-      request = new XMLHttpRequest(); request.open('POST', isLitterbox ? '/litterbox/api.php' : '/user/api.php');
-      request.setRequestHeader('X-Catbox-Async', '1');
+      const controller = new AbortController();
+      request = controller;
+      result.innerHTML = '<button class="button button-quiet button-small" type="button" data-cancel-upload>Cancel upload</button>';
+      result.querySelector('[data-cancel-upload]').onclick = () => controller.abort();
+      if (progress) { progress.hidden = false; bar.style.width = '0%'; }
+      (async () => {
+        try {
+          const job = await chunkedUpload(file, {
+            userhash: !isLitterbox ? getCookie('userhash') : null,
+            time: isLitterbox ? $('#expiry').value : null,
+            signal: controller.signal,
+            onProgress: (sent, total) => {
+              const percent = Math.round(sent / total * 100);
+              if (progress) bar.style.width = `${percent}%`;
+              setStatus(`Uploading · ${percent}%`);
+            },
+          });
+          if (progress) progress.hidden = true;
+          setStatus('Queued for upload…');
+          const url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…'));
+          setStatus(isLitterbox ? 'Upload complete. This file will expire as selected.' : 'Upload complete.', 'success');
+          showLink(url);
+        } catch (error) {
+          if (progress) progress.hidden = true;
+          setStatus(controller.signal.aborted ? 'Upload cancelled.' : (error.message || 'The upload could not be completed.'), 'error');
+        } finally {
+          finish();
+        }
+      })();
       const finish = () => {
         uploadBusy = false;
         input.disabled = false;
         dropzone?.classList.remove('is-uploading');
         dropzone?.removeAttribute('aria-busy');
         request = null;
+        result.querySelector('[data-cancel-upload]')?.remove();
       };
-      request.onabort = () => { if (progress) progress.hidden = true; setStatus('Upload cancelled.', 'error'); finish(); };
-      if (progress) { progress.hidden = false; bar.style.width = '0%'; }
-      request.upload.onprogress = event => { if (event.lengthComputable && progress) { bar.style.width = `${Math.round(event.loaded / event.total * 100)}%`; setStatus(`Uploading · ${Math.round(event.loaded / event.total * 100)}%`); } };
-      request.onload = async () => {
-        if (progress) progress.hidden = true;
-        if (request.status === 202) {
-          try {
-            const job = JSON.parse(request.responseText);
-            setStatus('Queued for upload…');
-            const url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…'));
-            setStatus(isLitterbox ? 'Upload complete. This file will expire as selected.' : 'Upload complete.', 'success');
-            showLink(url);
-          } catch (error) { setStatus(error.message || 'The upload could not be completed.', 'error'); }
-          finally { finish(); }
-          return;
-        }
-        if (request.status < 200 || request.status >= 300) { setStatus(request.responseText || 'That upload didn’t work. Please try again.', 'error'); finish(); return; }
-        setStatus(isLitterbox ? 'Upload complete. This file will expire as selected.' : 'Upload complete.', 'success'); showLink(request.responseText.trim()); finish();
-      };
-      request.onerror = () => { if (progress) progress.hidden = true; setStatus('Could not reach the server. Please try again.', 'error'); finish(); };
-      try { request.send(form); }
-      catch { if (progress) progress.hidden = true; setStatus('Could not start the upload. Please try again.', 'error'); finish(); }
     }
     input.addEventListener('change', () => upload(input.files?.[0]));
     ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.add('is-dragging'); }));
@@ -640,6 +700,7 @@
         const response = await fetch(isLitterbox ? '/litterbox/api.php' : '/user/api.php', {
           method: 'POST', body,
           headers: { 'X-Catbox-Async': '1' },
+          signal: AbortSignal.timeout(5 * 60 * 1000),
         });
         const output = (await response.text()).trim();
         if (response.status === 202) {
