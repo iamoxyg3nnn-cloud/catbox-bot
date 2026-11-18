@@ -1248,7 +1248,10 @@ a:hover { color: #3f8694; text-decoration: underline; }
 .legacy-artwork.top-left-waifu { position:fixed; top:8px; left:8px; width:min(15vw,170px); max-height:28vh; }
 .legacy-artwork.bottom-right-waifu { position:fixed; right:8px; bottom:8px; width:min(18vw,210px); max-height:32vh; }
 .legacy-artwork.page-artwork.top-left-waifu { top:84px; width:min(13vw,150px); max-height:26vh; }
-.classic-dashboard > .legacy-page-header { z-index:1; }
+/* The header is absolutely positioned on wide screens while the main panel is
+   relative. Both used to sit at z-index:1, so the later-painted main panel
+   covered the Home link and swallowed every click. Keep the header above it. */
+.classic-dashboard > .legacy-page-header { z-index:5; }
 .classic-dashboard > .legacy-content, .classic-dashboard > .legacy-footer { position:relative; z-index:1; }
 .legacy-page > .legacy-content, .legacy-page > .wrap { position:relative; z-index:1; }
 .legacy-page-header .home-button { position:relative; z-index:2; }

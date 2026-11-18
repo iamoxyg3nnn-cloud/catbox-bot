@@ -430,7 +430,11 @@
       if (!trigger || request) return;
       openPanel();
     });
-    if (location.hash === '#library-upload-panel') openPanel(false);
+    // The account nav "Upload" link points at a hash on this same page, so a
+    // click while already here fires hashchange without re-running init.
+    const syncUploadHash = () => { if (location.hash === '#library-upload-panel') openPanel(false); };
+    syncUploadHash();
+    window.addEventListener('hashchange', syncUploadHash);
     $('#library-upload-close').addEventListener('click', () => {
       if (request) return;
       panel.hidden = true;

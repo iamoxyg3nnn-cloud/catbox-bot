@@ -132,6 +132,11 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Queued jobs pass a stable Discord `nonce` (`enforce_nonce: true`) derived from the job id, so an at-least-once retry returns the existing message instead of duplicating an attachment.
 - All recovery knobs are env-configurable (`STALE_JOB_AFTER_MS`, `JOB_RECOVERY_SWEEP_MS`, `TEMP_MAX_AGE_MS`, `TEMP_SWEEP_MS`, `UPLOAD_BODY_TIMEOUT_MS`). Tests: 44/44, including resumable offsets, idempotent completion, and the Discord nonce.
 
+## UI button fixes
+- **Home button on the account dashboard:** on wide screens the header is absolutely positioned while the main panel is relative; both sat at `z-index:1`, so the later-painted main panel covered the Home link and swallowed clicks. Raised `.classic-dashboard > .legacy-page-header` to `z-index:5`.
+- **Upload nav link:** clicking "Upload" while already on My files only changes the URL hash, so the one-time init check never re-ran and the upload panel stayed closed. Added a `hashchange` listener that opens the panel.
+- Audited every button/link across all pages (Home, nav, sign out, upload panel open/close/cancel/copy, album create/cancel, theme toggle, auth/contact forms): all have live handlers. `npm test` 45/45.
+
 ## Album ownership and empty state
 - Album/file mutations now use the authenticated session's userhash first and fall back to the body field only for plain reference-style API clients. A valid session can no longer create an album under a stale or bogus `userhash`, which previously made it invisible on the Albums page.
 - Chunk-upload sessions reject non-string `userhash` values instead of stringifying them into `[object Object]`, which would silently orphan a file from its owner.
