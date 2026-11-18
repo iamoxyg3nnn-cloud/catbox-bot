@@ -56,6 +56,26 @@ jobs:
         run: |
           python3 -c 'import json,sys; print(json.dumps({"sql": sys.stdin.read()}))' \
             < infra/supabase/schema.sql > /tmp/catbox-schema.json
+
+          # Supabase is started by a separate workflow. Wait for it rather than
+          # racing it (a 502 here used to fail this job before DB was ready).
+          echo "Waiting for Supabase metadata endpoint..."
+          READY=0
+          for i in $(seq 1 120); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$SUPABASE_URL/rest/v1/" \
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" 2>/dev/null || echo 000)
+            if [ "$code" != "502" ] && [ "$code" != "503" ] && [ "$code" != "000" ]; then
+              READY=1
+              echo "Supabase ready after $i checks (HTTP $code)."
+              break
+            fi
+            sleep 10
+          done
+          if [ "$READY" -ne 1 ]; then
+            echo "::error::Supabase never became ready"
+            exit 1
+          fi
+
           curl -fsS -X POST "$SUPABASE_URL/functions/v1/migrate" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
