@@ -110,6 +110,12 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Live checks through the Vercel domain all passed: `/`, `/api/config`, `/api/metrics`, `/styles.css`, `/assets/mewpocket.svg`, `/ops`, small upload + byte round-trip, 5 MiB upload + byte round-trip, and the full 20 MiB upload + byte round-trip. All test Discord messages and metadata rows were deleted (`files` and `upload_jobs` verified empty).
 - Vercel's GitHub auto-connect could not be enabled with the available token (no Login Connection on the account), so redeploys are manual: `npx vercel@latest deploy public --prod --yes --token $VERCEL_TOKEN` from the repo root. `public/.gitignore` ignores Vercel's local `.vercel` metadata.
 
+## Supabase public URL / 401 clarification
+- `https://supabase.mew-pocket.de5.net/` serves **Supabase Studio**, not the REST API. Kong applies `basic-auth` to the Studio catch-all route, so an anonymous `GET /` correctly returns **401** with `WWW-Authenticate: Basic realm="service"`. This is a login gate, not an outage.
+- Login works with username `supabase` and the `DASHBOARD_PASSWORD` secret: `/` → `307` → `/project/default` → `200`. Browsers cache the Basic credential for the origin.
+- `/rest/v1/` and `/auth/v1/` anonymously return 401 "No API key found in request" — also correct. With `apikey: $SUPABASE_ANON_KEY`, `GET /auth/v1/health` returns **200**; use that for uptime/monitoring checks instead of `/`.
+- `Supabase-Actions` stays verbatim; no Kong config or workflow changes were made, so no service restart was needed.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `data/tmp` and `D:\catbox_staging` are transient.
