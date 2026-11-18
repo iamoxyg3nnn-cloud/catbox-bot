@@ -112,6 +112,13 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Auto-deploy verified: an empty commit pushed to `master` produced a new READY production deployment (`dpl_9ZGbyKrvYJV5JB1aQfT7vZzHeL15` for `fc5e611`) and `https://mew-pocket.vercel.app` kept serving the app with working rewrites (`/api/config` 200, `/user/api.php` 412 = backend reached).
 - `public/.gitignore` ignores Vercel's local `.vercel` metadata. Manual fallback remains `npx vercel@latest deploy public --prod --yes --token $VERCEL_TOKEN`.
 
+## Hybrid CDN rotation (Vercel + Cloudflare)
+- Both edges serve the identical app: `https://mew-pocket.vercel.app` (Vercel CDN) and `https://api.mew-pocket.de5.net` (Cloudflare edge + tunnel). The frontend keeps using same-origin rewrites on whichever edge serves the page, so sessions/cookies and CORS are unaffected.
+- `public/cdn-rotation.js` steers each tab session at page load: probes `/ping.txt` (edge latency) and `/api/config` (API health) on both origins with a 2.5 s timeout, keeps an EWMA of latency, fails over immediately when the current edge is unhealthy, prefers an edge that is >250 ms faster, and deterministically sends 15% of new home-page sessions to the other edge so both CDNs carry real traffic.
+- Sticky state lives in `sessionStorage`; a one-per-tab redirect guard makes loops impossible. `?cdn=vercel` / `?cdn=cloudflare` forces an edge for testing. `document.documentElement.dataset.cdn` and `#cdn-status` expose the decision; `ops.html` shows a live CDN card.
+- Design rationale from research: do **not** proxy Vercel through Cloudflare (Vercel warns about lost client IP/geo, degraded bot rules, and two stale caches). Client-side steering at page load avoids that while still using both CDNs. Limitation: it cannot rescue the initial HTML if one hostname is fully down — both URLs are valid entry points.
+- Health probes use `mode: 'no-cors'`, so no CORS changes or secrets are needed in the browser module. No tokens or credentials are ever placed in it.
+
 ## Supabase public URL / 401 clarification
 - `https://supabase.mew-pocket.de5.net/` serves **Supabase Studio**, not the REST API. Kong applies `basic-auth` to the Studio catch-all route, so an anonymous `GET /` correctly returns **401** with `WWW-Authenticate: Basic realm="service"`. This is a login gate, not an outage.
 - Login works with username `supabase` and the `DASHBOARD_PASSWORD` secret: `/` → `307` → `/project/default` → `200`. Browsers cache the Basic credential for the origin.

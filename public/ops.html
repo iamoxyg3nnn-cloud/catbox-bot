@@ -19,6 +19,7 @@
     th, td { text-align: left; padding: 8px; border-bottom: 1px solid #2b3442; }
     th { color: #8d9bb0; font-weight: 600; }
     .status-up { color: #6ee7a8; } .status-down { color: #f87171; }
+    #cdn-status .status-up, #cdn-status .status-down { font-size: 13px; }
     footer { margin-top: 20px; color: #66748a; font-size: 12px; }
   </style>
 </head>
@@ -31,6 +32,7 @@
     <div class="card"><div class="label">Staged on disk</div><div class="value" id="disk">—</div><canvas id="diskChart"></canvas></div>
     <div class="card"><div class="label">Upload queue</div><div class="value" id="queue">—</div></div>
     <div class="card"><div class="label">Journal backlog</div><div class="value" id="journal">—</div></div>
+    <div class="card"><div class="label">Hybrid CDN rotation</div><div class="value" id="cdn-status" style="font-size:14px;line-height:1.7">Probing edges…</div></div>
   </div>
 
   <div class="card" style="margin-top:12px">
@@ -42,6 +44,7 @@
 
   <footer id="foot">Waiting for /api/metrics…</footer>
 
+  <script src="/cdn-rotation.js?v=mewpocket-hybrid-1" defer></script>
   <script>
     const history = { rate: [], disk: [] };
     const el = id => document.getElementById(id);
