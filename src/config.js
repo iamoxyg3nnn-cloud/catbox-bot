@@ -46,6 +46,12 @@ const config = {
   // without reconfiguration.
   baseUrl: process.env.PUBLIC_BASE_URL || null,
 
+  // How /files/:name delivers bytes. "proxy" streams storage bytes through
+  // this origin so the browser keeps showing our own domain; "redirect" is the
+  // legacy 302-to-CDN behaviour. Discord remains the only durable byte store
+  // either way.
+  fileDelivery: process.env.FILE_DELIVERY === 'redirect' ? 'redirect' : 'proxy',
+
   // Where uploaded bytes are staged while they are being sent to Discord.
   // This directory is transient: production must never treat it as storage.
   dataDir: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),

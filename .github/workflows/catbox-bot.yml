@@ -102,6 +102,7 @@ jobs:
           TRUST_PROXY=1
           DATA_DIR=./data
           MAX_FILE_SIZE=20mb
+          FILE_DELIVERY=proxy
           DISCORD_BOT_ID=primary
           DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
           DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}

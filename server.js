@@ -7,6 +7,7 @@ require('./bootstrap');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { once } = require('events');
 const express = require('express');
 const multer = require('multer');
 
@@ -308,7 +309,63 @@ async function serveFile(req, res) {
   const signedUrl = await getStorage().resolve(row);
   const target = signedUrl.startsWith('/') ? publicUrl(req, signedUrl) : signedUrl;
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.redirect(302, target);
+
+  if (config.fileDelivery === 'redirect') {
+    return res.redirect(302, target);
+  }
+  return proxyBytes(target, req, res, row.mime);
+}
+
+// Stream the signed storage URL to the browser under our own hostname. The
+// address bar never changes to the storage CDN, and no byte is written to disk.
+async function proxyBytes(sourceUrl, req, res, mime) {
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  res.on('close', onClose);
+
+  const headers = { 'user-agent': 'MewPocket/1.0' };
+  if (req.headers.range && /^bytes=/i.test(req.headers.range)) headers.range = req.headers.range;
+
+  let upstream;
+  try {
+    upstream = await fetch(sourceUrl, { headers, redirect: 'follow', signal: controller.signal });
+  } catch {
+    if (!res.headersSent) return res.status(502).type('text/plain').send('The file is temporarily unavailable.');
+    return res.end();
+  }
+  if (!upstream.ok && upstream.status !== 206) {
+    await upstream.body?.cancel().catch(() => {});
+    if (!res.headersSent) return res.status(502).type('text/plain').send('The file is temporarily unavailable.');
+    return res.end();
+  }
+
+  // Forward only safe, useful headers. Never leak the signed storage URL.
+  for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    const value = upstream.headers.get(name);
+    if (value) res.setHeader(name, value);
+  }
+  if (!res.getHeader('content-type')) res.type(mime || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.status(upstream.status);
+
+  if (req.method === 'HEAD' || !upstream.body) {
+    await upstream.body?.cancel().catch(() => {});
+    res.end();
+    return;
+  }
+  try {
+    const reader = upstream.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!res.write(value)) await once(res, 'drain');
+    }
+  } catch {
+    // Client disconnected or the upstream stream dropped; nothing left to send.
+  } finally {
+    res.off('close', onClose);
+    res.end();
+  }
 }
 
 function serveFileSafe(req, res) {

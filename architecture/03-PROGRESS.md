@@ -119,6 +119,11 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Design rationale from research: do **not** proxy Vercel through Cloudflare (Vercel warns about lost client IP/geo, degraded bot rules, and two stale caches). Client-side steering at page load avoids that while still using both CDNs. Limitation: it cannot rescue the initial HTML if one hostname is fully down — both URLs are valid entry points.
 - Health probes use `mode: 'no-cors'`, so no CORS changes or secrets are needed in the browser module. No tokens or credentials are ever placed in it.
 
+## File links keep our own domain
+- `/files/:name` and `/i/:name` previously answered `302` to the signed Discord CDN URL, so clicking a share link changed the address bar to `cdn.discordapp.com`. They now **stream the signed storage bytes through this origin** (`FILE_DELIVERY=proxy`, the default), so the address bar and copied link stay on `api.mew-pocket.de5.net/files/...` (or the Vercel origin via the existing rewrite).
+- The proxy forwards safe headers (`Content-Type`, `Content-Length`, `Content-Range`, `Accept-Ranges`, `ETag`, `Last-Modified`), supports Range/HEAD for media, sets `Cache-Control: public, max-age=300`, and never exposes the signed URL. Discord remains the only durable byte store; no bytes are written to disk. `FILE_DELIVERY=redirect` restores the old behaviour if ever needed.
+- Upload responses and dashboard/album URLs already used `publicUrl(req, '/files/<name>')`, so they were correct — the Discord URL only appeared because the browser followed the redirect.
+
 ## Supabase public URL / 401 clarification
 - `https://supabase.mew-pocket.de5.net/` serves **Supabase Studio**, not the REST API. Kong applies `basic-auth` to the Studio catch-all route, so an anonymous `GET /` correctly returns **401** with `WWW-Authenticate: Basic realm="service"`. This is a login gate, not an outage.
 - Login works with username `supabase` and the `DASHBOARD_PASSWORD` secret: `/` → `307` → `/project/default` → `200`. Browsers cache the Basic credential for the origin.

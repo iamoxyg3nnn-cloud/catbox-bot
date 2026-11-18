@@ -117,12 +117,14 @@ test('fileupload stores and serves a file', async () => {
   assert.equal(await served.text(), 'hello world');
 });
 
-test('downloads redirect to a signed URL and no permanent disk copy is made', async () => {
+test('downloads stream bytes under our own domain and no permanent disk copy is made', async () => {
   const up = await uploadFile([['reqtype', 'fileupload']], 'redirect.txt', 'redirect body');
   assert.equal(up.status, 200, up.text);
   const res = await fetch(up.text.trim(), { redirect: 'manual' });
-  assert.equal(res.status, 302);
-  assert.match(res.headers.get('location') || '', /\/__mock_cdn\//);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('location'), null);
+  assert.match(res.headers.get('content-type') || '', /text\/plain/);
+  assert.equal(await res.text(), 'redirect body');
   assert.equal(fs.existsSync(path.join(DATA_DIR, 'files')), false);
 });
 
@@ -149,7 +151,8 @@ test('async upload returns a job and resolves to a share URL', async () => {
   assert.equal(status.status, 'ready', status.error);
   assert.match(status.url, /\/files\/[a-z0-9]+\.txt$/);
   const page = await fetch(status.url, { redirect: 'manual' });
-  assert.equal(page.status, 302);
+  assert.equal(page.status, 200);
+  assert.equal(await page.text(), 'async body');
 });
 
 test('internal metadata endpoint requires the shared secret', async () => {
