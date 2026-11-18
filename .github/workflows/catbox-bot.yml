@@ -112,6 +112,28 @@ jobs:
           EOF
           echo "Runtime configuration written (tokens are masked in logs)."
 
+      - name: Require durable metadata config
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
+        run: |
+          # A fresh runner has an empty ./data directory. If any of these are
+          # blank the app silently falls back to local SQLite and every
+          # metadata write disappears at the next session, which looks exactly
+          # like a database flush. Fail loudly instead.
+          missing=0
+          for name in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY DISCORD_BOT_TOKEN DISCORD_CHANNEL_ID NODE_UPLOAD_SECRET; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is empty - refusing to start on an ephemeral runner"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "Durable metadata configuration present."
+
       - name: Apply metadata schema
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -177,6 +199,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           MAX_FILE_SIZE: 20mb
           TRUST_PROXY: 1
         shell: bash

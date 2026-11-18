@@ -149,6 +149,13 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - `/rest/v1/` and `/auth/v1/` anonymously return 401 "No API key found in request" — also correct. With `apikey: $SUPABASE_ANON_KEY`, `GET /auth/v1/health` returns **200**; use that for uptime/monitoring checks instead of `/`.
 - `Supabase-Actions` stays verbatim; no Kong config or workflow changes were made, so no service restart was needed.
 
+## Restart data-loss mitigation
+- Root cause investigation: Supabase runs on an ephemeral `actions/cache`-backed runner. `supabase-host.yml` drops every non-system schema with `CASCADE` on each restore and replays `supabase-state.tar.gz`. A stale/empty archive passes the upstream guards (a ~220 KB dump is mostly Supabase system schemas), and the bot then re-applies the idempotent `schema.sql` — so an empty restored DB looks healthy with zero rows. That is the "all database got flushed on restart" symptom. No application code issues `DROP`/`TRUNCATE`; all deletes are key-scoped.
+- Added `src/metadataMirror.js`: every 60 s it snapshots the account/file/album/album-file/message tables from Supabase, encrypts them with AES-256-GCM using `NODE_UPLOAD_SECRET`, and publishes the JSON as an attachment in the durable Discord channel. It keeps the newest 10 snapshots and prunes older ones.
+- On startup it loads the newest *non-empty* snapshot and restores only when `users` is empty and the target table is also empty. It never overwrites live rows, and it refuses to publish an empty account snapshot over a good mirror. A restore sends an alert through `ALERT_WEBHOOK_URL` so a silent upstream flush is visible.
+- `server.js` now starts the mirror before the job runner and publishes a final snapshot on SIGTERM/SIGINT. The bot workflow passes `ALERT_WEBHOOK_URL` and fails fast if any Supabase/Discord/secret value is blank, preventing the silent SQLite fallback that would also lose metadata on a fresh runner.
+- `Supabase-Actions` remains verbatim; no upstream workflow or schema was touched. Tests: 51/51, including mirror encryption, empty-snapshot skipping, guarded restore and pruning.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `data/tmp` and `D:\catbox_staging` are transient.

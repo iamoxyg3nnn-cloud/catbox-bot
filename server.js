@@ -19,6 +19,7 @@ const db = require('./src/dbAdapter');
 const util = require('./src/util');
 const api = require('./src/api');
 const auth = require('./src/auth');
+const metadataMirror = require('./src/metadataMirror');
 
 const app = express();
 app.disable('x-powered-by');
@@ -509,7 +510,16 @@ setInterval(() => {
 
 if (require.main === module) {
   db.getDb();
-  jobs.start().catch(err => console.error('job runner failed to start:', err));
+
+  // Supabase can come back empty after its host restarts. Restore the
+  // Discord-backed metadata mirror before the job runner starts, so workers
+  // never race a half-restored table.
+  metadataMirror.start()
+    .catch(err => console.error('metadata mirror failed to start:', err))
+    .finally(() => {
+      jobs.start().catch(err => console.error('job runner failed to start:', err));
+    });
+
   const server = app.listen(config.port, () => {
     console.log(`File sharing service listening on http://localhost:${config.port}`);
   });
@@ -517,6 +527,20 @@ if (require.main === module) {
   // watchdog reports a stalled transfer long before this ceiling is reached.
   server.headersTimeout = 60_000;
   server.requestTimeout = config.uploadRecovery.bodyTimeoutMs;
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}; persisting final metadata snapshot.`);
+    metadataMirror.flush().finally(() => {
+      metadataMirror.stop();
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 5000).unref();
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 module.exports = { app };
