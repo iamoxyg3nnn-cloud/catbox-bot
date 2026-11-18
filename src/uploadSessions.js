@@ -20,13 +20,20 @@ const { sanitizeOriginalName, isBlockedUpload } = require('./util');
 const CHUNK_SIZE = 4 * 1024 * 1024;
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
+// Never sign capabilities with an empty key. Production always supplies
+// NODE_UPLOAD_SECRET; local runs get an ephemeral key so tokens cannot be
+// forged by anyone who knows the source.
+const SESSION_SECRET = process.env.NODE_UPLOAD_SECRET
+  ? Buffer.from(process.env.NODE_UPLOAD_SECRET)
+  : crypto.randomBytes(32);
+
 function stagePath(id) {
   return path.join(config.tmpDir, `session_${id}`);
 }
 
 function sign(payload) {
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  const mac = crypto.createHmac('sha256', process.env.NODE_UPLOAD_SECRET || '')
+  const mac = crypto.createHmac('sha256', SESSION_SECRET)
     .update(body).digest('base64url');
   return `${body}.${mac}`;
 }
@@ -34,7 +41,7 @@ function sign(payload) {
 function verify(token) {
   if (typeof token !== 'string' || !token.includes('.')) return null;
   const [body, mac] = token.split('.');
-  const expected = crypto.createHmac('sha256', process.env.NODE_UPLOAD_SECRET || '')
+  const expected = crypto.createHmac('sha256', SESSION_SECRET)
     .update(body).digest('base64url');
   const a = Buffer.from(mac || '');
   const b = Buffer.from(expected);
@@ -150,6 +157,7 @@ function register(app, { enqueue }) {
       return res.status(202).json(job);
     } catch { /* first completion */ }
     const jobId = await enqueue({
+      jobId: payload.id.slice(0, 24),
       stagedPath: stagePath(payload.id),
       ownerHash: payload.o || null,
       originalName: payload.n,

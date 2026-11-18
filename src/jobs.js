@@ -31,17 +31,24 @@ let recoveryTimer = null;
 let tempTimer = null;
 
 async function enqueue(details) {
-  const jobId = crypto.randomBytes(12).toString('hex');
-  await db.createJob({
-    jobId,
-    nodeId: process.env.NODE_ID || 'local',
-    stagedPath: details.stagedPath,
-    ownerHash: details.ownerHash || null,
-    originalName: details.originalName,
-    mime: details.mime,
-    size: details.size,
-    expiresAt: details.expiresAt || null,
-  });
+  const jobId = details.jobId || crypto.randomBytes(12).toString('hex');
+  try {
+    await db.createJob({
+      jobId,
+      nodeId: process.env.NODE_ID || 'local',
+      stagedPath: details.stagedPath,
+      ownerHash: details.ownerHash || null,
+      originalName: details.originalName,
+      mime: details.mime,
+      size: details.size,
+      expiresAt: details.expiresAt || null,
+    });
+  } catch (err) {
+    // A deterministic id makes a retried final acknowledgement safe even if
+    // writing the completion marker failed after the job was created.
+    const existing = await Promise.resolve().then(() => db.getJob(jobId)).catch(() => null);
+    if (!existing) throw err;
+  }
   kick();
   return jobId;
 }

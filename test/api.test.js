@@ -208,6 +208,7 @@ test('resumable chunk upload rejects bad offsets and commits only once', async (
   const accepted = await complete();
   assert.equal(accepted.status, 202);
   const job = await accepted.json();
+  assert.equal(job.job_id, session.uploadId.slice(0, 24));
   const retry = await complete();
   assert.equal((await retry.json()).job_id, job.job_id);
 
