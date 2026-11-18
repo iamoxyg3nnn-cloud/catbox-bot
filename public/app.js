@@ -528,17 +528,31 @@
       $('[data-username]').textContent = data.user.username;
       $('[data-avatar]').textContent = data.user.username.slice(0, 1).toUpperCase();
       const grid = $('#album-grid');
-      const showAlbums = () => grid.innerHTML = data.albums.length ? data.albums.map(album => `<article class="album-card"><span class="album-icon">${icon('album')}</span><h3>${esc(album.title)}</h3><p>${esc(album.description || 'A collection of your files.')}</p><div class="album-url"><a href="/a/${esc(album.short)}">/a/${esc(album.short)}</a><button class="icon-button" data-copy="${esc(location.origin)}/a/${esc(album.short)}" aria-label="Copy album link">${icon('copy', true)}</button></div></article>`).join('') : `<div class="empty-state" style="grid-column:1/-1"><span class="upload-glyph">${icon('album')}</span><h3>No albums yet.</h3><p>Pick a few files from your library and turn them into one tidy link.</p></div>`;
-      showAlbums();
-      grid.onclick = event => { const button = event.target.closest('[data-copy]'); if (button) copyText(button.dataset.copy); };
       const newAlbumButton = $('#new-album');
-      newAlbumButton.onclick = () => {
-        const wrap = $('#album-form-wrap'); wrap.hidden = false; newAlbumButton.setAttribute('aria-expanded', 'true'); wrap.scrollIntoView({ behavior: 'smooth', block: 'start' }); $('#album-title').focus();
-        const fieldset = $('#album-files');
+      const wrap = $('#album-form-wrap');
+      const fieldset = $('#album-files');
+      function openAlbumForm() {
+        wrap.hidden = false;
+        newAlbumButton.setAttribute('aria-expanded', 'true');
+        wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        $('#album-title').focus();
         if (fieldset.dataset.loaded) return;
         fieldset.dataset.loaded = 'true';
         fieldset.innerHTML = data.files.length ? data.files.map(file => `<label class="album-file-option"><input type="checkbox" name="files" value="${esc(file.name)}"><span>${esc(file.originalName || file.name)} <small>${fileSize(file.size)}</small></span></label>`).join('') : '<p class="option-note">You do not have any files to add yet. Upload a file while signed in, then return here.</p>';
+      }
+      const showAlbums = () => {
+        if (data.albums.length) {
+          grid.innerHTML = data.albums.map(album => `<article class="album-card"><span class="album-icon">${icon('album')}</span><h3>${esc(album.title)}</h3><p>${esc(album.description || 'A collection of your files.')}</p><div class="album-url"><a href="/a/${esc(album.short)}">/a/${esc(album.short)}</a><button class="icon-button" data-copy="${esc(location.origin)}/a/${esc(album.short)}" aria-label="Copy album link">${icon('copy', true)}</button></div></article>`).join('');
+          return;
+        }
+        grid.innerHTML = data.files.length
+          ? `<div class="empty-state" style="grid-column:1/-1"><span class="upload-glyph">${icon('album')}</span><h3>Your files are ready.</h3><p>You have ${data.files.length} file${data.files.length === 1 ? '' : 's'} in your library. Group them into an album to get one shareable link.</p><button class="button button-dark button-small" type="button" data-create-album>Create your first album</button></div>`
+          : `<div class="empty-state" style="grid-column:1/-1"><span class="upload-glyph">${icon('album')}</span><h3>No albums yet.</h3><p>Upload a file while signed in, then come back here to group it into an album.</p><a class="button button-dark button-small" href="/user/index.php#library-upload-panel">Upload a file</a></div>`;
+        grid.querySelector('[data-create-album]')?.addEventListener('click', openAlbumForm);
       };
+      showAlbums();
+      grid.onclick = event => { const button = event.target.closest('[data-copy]'); if (button) copyText(button.dataset.copy); };
+      newAlbumButton.onclick = openAlbumForm;
       $('#cancel-album').onclick = () => { $('#album-form').reset(); $('#album-error').textContent = ''; $('#album-form-wrap').hidden = true; newAlbumButton.setAttribute('aria-expanded', 'false'); newAlbumButton.focus(); };
       $('#album-form').onsubmit = async event => {
         event.preventDefault(); const form = event.currentTarget;
@@ -550,7 +564,9 @@
         try {
           const response = await fetch('/user/api.php', { method: 'POST', body }); const result = await response.text();
           if (!response.ok) { $('#album-error').textContent = result || 'The album could not be created. Check your details and try again.'; form.dataset.submitting = 'false'; button.disabled = false; button.innerHTML = `Create album ${icon('arrow', true)}`; return; }
-          location.assign(result);
+          // Keep the frontend origin: /a/:short is served by this app and fetches
+          // album data through the same-origin API rewrite.
+          location.assign(new URL(result, location.origin).pathname);
         } catch { $('#album-error').textContent = 'Could not reach the server. Your album was not created. Try again.'; form.dataset.submitting = 'false'; button.disabled = false; button.innerHTML = `Create album ${icon('arrow', true)}`; }
       };
     } catch (error) { if (error.message !== 'Please sign in.') $('#album-grid').innerHTML = `<div class="empty-state"><h3>We couldn’t load your albums.</h3><p>${esc(error.message)} Your albums have not been changed.</p><button class="button button-quiet" type="button" data-retry>Try again</button></div>`; $('#album-grid [data-retry]')?.addEventListener('click', () => location.reload()); }

@@ -164,6 +164,15 @@ test('resumable chunk upload rejects bad offsets and commits only once', async (
   assert.equal(created.status, 201);
   const session = await created.json();
   assert.equal(session.chunkSize, 4 * 1024 * 1024);
+
+  const badOwner = await fetch(`${BASE}/api/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ originalName: 'bad.txt', mime: 'text/plain', size: 1, userhash: { value: 'fake' } }),
+  });
+  const badSession = await badOwner.json();
+  const badPayload = JSON.parse(Buffer.from(badSession.token.split('.')[0], 'base64url').toString('utf8'));
+  assert.equal(badPayload.o, null, 'non-string userhash must not become "[object Object]"');
   const headers = token => ({ 'Content-Type': 'application/octet-stream', 'X-Upload-Token': token });
 
   const wrongOffset = await fetch(`${BASE}/api/uploads/${session.uploadId}`, {
@@ -374,6 +383,7 @@ test('urlupload rejects non-http urls', async () => {
 /* --------------------------------- auth -------------------------------- */
 
 let userhash;
+let sessionCookie;
 
 test('registration and deletefiles', async () => {
   const res = await postForm(`${BASE}/user/doregister.php`, [
@@ -385,7 +395,7 @@ test('registration and deletefiles', async () => {
   userhash = decodeURIComponent(res.headers.getSetCookie()
     .find(cookie => cookie.startsWith('userhash='))
     .split(';')[0].slice('userhash='.length));
-  const sessionCookie = res.headers.getSetCookie()
+  sessionCookie = res.headers.getSetCookie()
     .find(cookie => cookie.startsWith('catsess='))
     .split(';')[0];
   assert.match(userhash, /^[a-f0-9]+$/i);
@@ -429,6 +439,30 @@ test('login accepts the registered password', async () => {
   ]);
   assert.equal(res.status, 200);
   assert.match(await res.text(), /Authenticated/);
+});
+
+test('a signed-in session owns albums even if the body userhash is stale', async () => {
+  const up = await uploadFile([['reqtype', 'fileupload'], ['userhash', userhash]], 'session-album.txt', 'owned');
+  assert.equal(up.status, 200, up.text);
+  const name = up.text.trim().split('/').pop();
+
+  const body = new URLSearchParams();
+  body.append('reqtype', 'createalbum');
+  body.append('userhash', 'ffffffffffffffffffffffffffffffffffffffff');
+  body.append('title', 'Session Album');
+  body.append('files', name);
+  const created = await fetch(`${BASE}/user/api.php`, {
+    method: 'POST', headers: { cookie: sessionCookie }, body,
+  });
+  const createdUrl = await created.text();
+  assert.equal(created.status, 200, createdUrl);
+  const short = createdUrl.trim().split('/').pop();
+
+  const dashboard = await fetch(`${BASE}/api/dashboard`, {
+    headers: { cookie: sessionCookie },
+  }).then(response => response.json());
+  assert.ok(dashboard.albums.some(album => album.short === short),
+    'album should be listed for the session owner');
 });
 
 /* -------------------------------- albums ------------------------------- */

@@ -75,7 +75,11 @@ function register(app, { enqueue }) {
     const originalName = sanitizeOriginalName(String(body.originalName || ''));
     const mime = String(body.mime || 'application/octet-stream').slice(0, 120);
     const size = Number(body.size);
-    const userhash = body.userhash ? String(body.userhash).slice(0, 200) : null;
+    // Reject non-string values instead of stringifying them into garbage like
+    // "[object Object]", which would silently orphan the upload from its owner.
+    const userhash = typeof body.userhash === 'string' && body.userhash
+      ? body.userhash.slice(0, 200)
+      : null;
     const litterboxTime = String(body.time || '');
     const expiresAt = config.litterboxTimes[litterboxTime]
       ? Date.now() + config.litterboxTimes[litterboxTime]

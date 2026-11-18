@@ -228,7 +228,7 @@ async function handleUrlUpload(req, res) {
 /* ------------------------- file deletion ------------------------- */
 
 async function handleDeleteFiles(req, res) {
-  const userhash = String(req.body && req.body.userhash || '');
+  const userhash = ownerFromReq(req) || '';
   const user = await db.findUserByHash(userhash);
   if (!user) return text(res, 401, 'A valid userhash is required to delete files.');
 
@@ -274,7 +274,9 @@ function parseFileList(raw) {
 }
 
 async function handleCreateAlbum(req, res) {
-  const userhash = String(req.body && req.body.userhash || '');
+  // A valid session is authoritative; the body field is the fallback for the
+  // plain reference-style API clients that authenticate with userhash only.
+  const userhash = ownerFromReq(req) || '';
   const user = userhash ? await db.findUserByHash(userhash) : null;
   if (userhash && !user) return text(res, 401, 'That userhash is not valid.');
 
@@ -340,7 +342,7 @@ async function handleDeleteAlbum(req, res) {
 
 // Shared ownership gate for every mutating album request.
 async function ownAlbum(req, res) {
-  const userhash = String(req.body && req.body.userhash || '');
+  const userhash = ownerFromReq(req) || '';
   const user = await db.findUserByHash(userhash);
   if (!user) { text(res, 401, 'A valid userhash is required to manage albums.'); return null; }
   const short = String(req.body.short || '');

@@ -132,6 +132,12 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Queued jobs pass a stable Discord `nonce` (`enforce_nonce: true`) derived from the job id, so an at-least-once retry returns the existing message instead of duplicating an attachment.
 - All recovery knobs are env-configurable (`STALE_JOB_AFTER_MS`, `JOB_RECOVERY_SWEEP_MS`, `TEMP_MAX_AGE_MS`, `TEMP_SWEEP_MS`, `UPLOAD_BODY_TIMEOUT_MS`). Tests: 44/44, including resumable offsets, idempotent completion, and the Discord nonce.
 
+## Album ownership and empty state
+- Album/file mutations now use the authenticated session's userhash first and fall back to the body field only for plain reference-style API clients. A valid session can no longer create an album under a stale or bogus `userhash`, which previously made it invisible on the Albums page.
+- Chunk-upload sessions reject non-string `userhash` values instead of stringifying them into `[object Object]`, which would silently orphan a file from its owner.
+- The Albums empty state is now actionable: with library files it offers **Create your first album**; without files it links to the signed-in upload panel. Creating an album keeps the browser on the Vercel frontend instead of jumping to the API origin.
+- Tests: 45/45, including session-owned album creation and non-string userhash rejection.
+
 ## Supabase public URL / 401 clarification
 - `https://supabase.mew-pocket.de5.net/` serves **Supabase Studio**, not the REST API. Kong applies `basic-auth` to the Studio catch-all route, so an anonymous `GET /` correctly returns **401** with `WWW-Authenticate: Basic realm="service"`. This is a login gate, not an outage.
 - Login works with username `supabase` and the `DASHBOARD_PASSWORD` secret: `/` → `307` → `/project/default` → `200`. Browsers cache the Basic credential for the origin.
