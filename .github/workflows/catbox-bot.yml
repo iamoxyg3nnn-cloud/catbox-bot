@@ -88,7 +88,17 @@ jobs:
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          DISCORD_BOT_ID: primary
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
+          MAX_FILE_SIZE: 20mb
+          TRUST_PROXY: 1
         run: |
+          # The app reads process.env directly (no dotenv loader), so export the
+          # secrets here as well as writing .env for local reference.
           npm start > server.log 2>&1 &
           SERVER_PID=$!
           ./cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" \
