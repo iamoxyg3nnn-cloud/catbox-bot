@@ -155,6 +155,8 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - On startup it loads the newest *non-empty* snapshot and restores only when `users` is empty and the target table is also empty. It never overwrites live rows, and it refuses to publish an empty account snapshot over a good mirror. A restore sends an alert through `ALERT_WEBHOOK_URL` so a silent upstream flush is visible.
 - `server.js` now starts the mirror before the job runner and publishes a final snapshot on SIGTERM/SIGINT. The bot workflow passes `ALERT_WEBHOOK_URL` and fails fast if any Supabase/Discord/secret value is blank, preventing the silent SQLite fallback that would also lose metadata on a fresh runner.
 - `Supabase-Actions` remains verbatim; no upstream workflow or schema was touched. Tests: 51/51, including mirror encryption, empty-snapshot skipping, guarded restore and pruning.
+- Login persistence: the `catsess` cookie only works while its row survives in `sessions`, which points at `users.id`. The mirror now snapshots `sessions` too and relinks each `user_id` by userhash after accounts are restored with regenerated identity ids. Accounts no longer need to be recreated, and existing session cookies keep working after a flush.
+- If Supabase empties while the bot is already running, `tick()` now calls `restoreOnce()` immediately instead of waiting for the next bot session to boot (was up to a 330-minute gap). Restores are serialised so a concurrent startup/tick/shutdown cannot double-write.
 
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.

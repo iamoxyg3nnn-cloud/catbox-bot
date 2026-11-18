@@ -32,7 +32,8 @@ function snapshot(users, extra = {}) {
     format: 1,
     takenAt: Date.now(),
     tables: {
-      users: users.map(u => ({ username: u, email: `${u}@test.local`, password_hash: 's1$x$y', userhash: `hash-${u}`, created_at: 1 })),
+      users: users.map((u, i) => ({ id: i + 1, username: u, email: `${u}@test.local`, password_hash: 's1$x$y', userhash: `hash-${u}`, created_at: 1 })),
+      sessions: [],
       files: [],
       albums: [],
       album_files: [],
@@ -165,4 +166,59 @@ test('tick publishes an encrypted snapshot and prunes old mirror messages', asyn
   const blob = JSON.parse(await posted.text());
   assert.equal(decrypt(blob).tables.users[0].username, 'alice');
   assert.equal(deleted.length, 2, 'keeps the newest ten snapshots');
+});
+
+test('restoreOnce relinks sessions to regenerated user ids', async () => {
+  const saved = encrypt(snapshot(['alice'], {
+    sessions: [{ token: 'catsess-old', user_id: 1, expires_at: 9999999999999 }],
+  }));
+  const live = { users: [], sessions: [] };
+  const writes = [];
+  global.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes('/rest/v1/')) {
+      const table = u.match(/\/rest\/v1\/([^?]+)/)[1];
+      if (init && init.method === 'POST') {
+        writes.push({ table, rows: JSON.parse(init.body) });
+        if (table === 'users') live.users.push({ id: 91, userhash: 'hash-alice' });
+        return empty();
+      }
+      if (table === 'users' && u.includes('select=id,userhash')) return json(live.users);
+      return json(live[table] || []);
+    }
+    if (u.endsWith('/messages?limit=50')) {
+      return json([{ id: '310', content: 'CATBOX_METADATA_MIRROR_V1 310', author: { bot: true }, attachments: [{ url: 'https://cdn.test/saved' }] }]);
+    }
+    if (u === 'https://cdn.test/saved') return json(saved);
+    throw new Error(`unexpected fetch ${u}`);
+  };
+
+  const restored = await mirror._internal.restoreOnce();
+  assert.deepEqual(restored, { users: 1, sessions: 1 });
+  const userWrite = writes.find(w => w.table === 'users');
+  assert.equal('id' in userWrite.rows[0], false, 'identity id must not be written');
+  const sessionWrite = writes.find(w => w.table === 'sessions');
+  assert.equal(sessionWrite.rows[0].user_id, 91, 'session must point at the regenerated user id');
+  assert.equal(sessionWrite.rows[0].token, 'catsess-old');
+});
+
+test('tick restores immediately when Supabase loses all accounts', async () => {
+  const saved = encrypt(snapshot(['alice']));
+  const posts = [];
+  global.fetch = async (url, init) => {
+    const u = String(url);
+    if (u.includes('/rest/v1/')) {
+      if (init && init.method === 'POST') posts.push(u);
+      return json([]);
+    }
+    if (u.endsWith('/messages?limit=50')) {
+      return json([{ id: '320', content: 'CATBOX_METADATA_MIRROR_V1 320', author: { bot: true }, attachments: [{ url: 'https://cdn.test/saved' }] }]);
+    }
+    if (u === 'https://cdn.test/saved') return json(saved);
+    return json([]);
+  };
+
+  await mirror._internal.tick();
+  assert.ok(posts.some(p => p.includes('/rest/v1/users')),
+    'tick should restore accounts instead of waiting for a bot restart');
 });

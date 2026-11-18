@@ -25,11 +25,13 @@ const KEEP_SNAPSHOTS = 10;
 const SNAPSHOT_INTERVAL_MS = 60 * 1000;
 const SNAPSHOT_FORMAT = 1;
 
-// Identity columns are intentionally omitted: Postgres generates them, and
-// restoring explicit ids would break the sequence. `users.userhash`,
-// `files.name`, `albums.short`, etc. are the real stable keys.
+// `users.id` is an identity column: Postgres generates it, so we snapshot it
+// only to remap `sessions.user_id` when accounts are restored with new ids.
+// `users.userhash`, `files.name`, `albums.short`, etc. are the real stable keys.
+// Sessions must come directly after users so the remap sees restored accounts.
 const TABLES = [
-  { table: 'users', columns: ['username', 'email', 'password_hash', 'userhash', 'created_at'] },
+  { table: 'users', columns: ['id', 'username', 'email', 'password_hash', 'userhash', 'created_at'] },
+  { table: 'sessions', columns: ['token', 'user_id', 'expires_at'] },
   { table: 'files', columns: ['name', 'owner_hash', 'original_name', 'mime', 'size', 'sha256',
     'uploaded_at', 'expires_at', 'bot_id', 'channel_id', 'message_id', 'attachment_id',
     'cdn_url', 'cdn_expires_at', 'status'] },
@@ -40,6 +42,7 @@ const TABLES = [
 
 let timer = null;
 let starting = null;
+let restoring = null;
 
 function supabaseConfig() {
   const url = process.env.SUPABASE_URL;
@@ -228,7 +231,27 @@ async function alert(text) {
   }
 }
 
-async function restoreOnce() {
+// Prepare a table's rows for restore. Identity ids are dropped so Postgres can
+// regenerate them; sessions are relinked to the regenerated users by userhash.
+async function prepareRows(table, rows, snapshot) {
+  if (table === 'users') {
+    return rows.map(({ id, ...rest }) => rest);
+  }
+  if (table === 'sessions') {
+    const oldIdToHash = new Map(
+      (snapshot.tables.users || []).map(u => [String(u.id), u.userhash])
+    );
+    const liveUsers = await readTable('users', ['id', 'userhash']);
+    const hashToNewId = new Map(liveUsers.map(u => [u.userhash, u.id]));
+    return rows.map(s => {
+      const newId = hashToNewId.get(oldIdToHash.get(String(s.user_id)));
+      return newId === undefined ? null : { ...s, user_id: newId };
+    }).filter(Boolean);
+  }
+  return rows;
+}
+
+async function doRestore() {
   const messages = await listMirrorMessages();
   const snapshot = await loadLatestSnapshot(messages);
   if (!snapshot) {
@@ -243,12 +266,14 @@ async function restoreOnce() {
   }
 
   const restored = {};
-  for (const { table } of TABLES) {
-    const rows = snapshot.tables[table] || [];
+  for (const { table, columns } of TABLES) {
+    let rows = snapshot.tables[table] || [];
     if (!rows.length) continue;
     // Only fill empty tables, so uploads made since the flush are preserved.
-    const live = await readTable(table, TABLES.find(t => t.table === table).columns.slice(0, 1));
+    const live = await readTable(table, columns.slice(0, 1));
     if (live.length) continue;
+    rows = await prepareRows(table, rows, snapshot);
+    if (!rows.length) continue;
     restored[table] = await writeTable(table, rows);
   }
 
@@ -258,11 +283,21 @@ async function restoreOnce() {
   return restored;
 }
 
+// Serialise restores so a concurrent tick/startup/shutdown cannot double-write.
+function restoreOnce() {
+  if (!restoring) {
+    restoring = doRestore().finally(() => { restoring = null; });
+  }
+  return restoring;
+}
+
 async function tick() {
   const snapshot = await snapshotSupabase();
-  // Never publish an empty account table over a good mirror.
   if (!snapshot.tables.users.length) {
-    warn('snapshot has no accounts; keeping the existing mirror');
+    // An empty account table means Supabase just flushed while we were running.
+    // Restore immediately instead of waiting for the next bot session to boot.
+    warn('no accounts in Supabase - attempting immediate mirror restore');
+    await restoreOnce();
     return;
   }
   await publishSnapshot(snapshot);
