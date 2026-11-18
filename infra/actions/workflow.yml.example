@@ -1,0 +1,78 @@
+# Copy into a NEW repo (e.g. vxillannnnnn-hub/catbox-actions) as
+# .github/workflows/host.yml. Pattern mirrors the existing Supabase-Actions
+# self-chaining Actions + Cloudflare Tunnel setup.
+#
+# NEVER commit real secrets. Configure them in the GitHub repo settings.
+
+name: Host catbox metadata stack
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/45 * * * *'   # keep the free Actions runner warm
+  push:
+    branches: [main]
+
+concurrency:
+  group: catbox-actions
+  cancel-in-progress: false
+
+jobs:
+  serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+
+      - name: Prepare environment
+        run: |
+          cp ../supabase/schema.sql ./schema.sql 2>/dev/null || true
+          printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD" > .env
+          printf 'JWT_SECRET=%s\n' "$JWT_SECRET" >> .env
+          printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASSWORD" >> .env
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+
+      - name: Start Postgres + PostgREST + Redis
+        run: docker compose up -d --build
+
+      - name: Wait for PostgREST
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:54321/ >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+
+      - name: Publish tunnels
+        env:
+          API_TUNNEL_TOKEN: ${{ secrets.API_TUNNEL_TOKEN }}
+          DB_TUNNEL_TOKEN: ${{ secrets.DB_TUNNEL_TOKEN }}
+        run: |
+          cloudflared tunnel --no-autoupdate run --token "$API_TUNNEL_TOKEN" \
+            --url http://127.0.0.1:54321 > api-tunnel.log 2>&1 &
+          cloudflared tunnel --no-autoupdate run --token "$DB_TUNNEL_TOKEN" \
+            --url tcp://127.0.0.1:6379 > db-tunnel.log 2>&1 &
+
+      - name: Keep runner alive
+        run: |
+          for i in $(seq 1 110); do
+            echo "catbox-actions alive $(date -u +%H:%M:%S)"
+            sleep 30
+          done
+
+      # Self-chain: start the next run before this one's 60-minute timeout.
+      - name: Chain next run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run host.yml --ref main

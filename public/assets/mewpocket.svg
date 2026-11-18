@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <title>MewPocket — a cat peeking out of a pocket</title>
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 38V13a2 2 0 0 1 3-1.7l9 5.8a22 22 0 0 1 8 0l9-5.8a2 2 0 0 1 3 1.7v25Z" fill="#fff5fc" stroke="#66406e" stroke-width="2.6"/>
+    <path d="m20 17 5 3.3-5 1.2Zm24 0-5 3.3 5 1.2Z" fill="#e4b1d1"/>
+    <path d="M24 26v2m16-2v2" stroke="#66406e" stroke-width="3.2"/>
+    <path d="M30 30h4l-2 2Z" fill="#b85b8d"/>
+    <path d="M32 32c0 2-3 3-4 1m4-1c0 2 3 3 4 1" stroke="#66406e" stroke-width="1.8"/>
+    <path d="M12 35h40a2 2 0 0 1 2 2v9c0 7-11 12-22 15C21 58 10 53 10 46v-9a2 2 0 0 1 2-2Z" fill="#a54d80" stroke="#734366" stroke-width="2.6"/>
+    <path d="M16 42v3c0 4 7 8 16 11 9-3 16-7 16-11v-3" stroke="#edc7df" stroke-width="1.5" stroke-dasharray="2 3"/>
+    <path d="M18 35v-1a4 4 0 0 1 8 0v1a4 4 0 0 1-8 0Zm20 0v-1a4 4 0 0 1 8 0v1a4 4 0 0 1-8 0Z" fill="#fff5fc" stroke="#66406e" stroke-width="2"/>
+    <path d="m32 42 1.4 3.6L37 47l-3.6 1.4L32 52l-1.4-3.6L27 47l3.6-1.4Z" fill="#ffe3f0"/>
+  </g>
+</svg>

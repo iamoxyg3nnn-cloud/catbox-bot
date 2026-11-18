@@ -1,0 +1,21 @@
+# Copy to wrangler.toml and adjust. Never commit real secrets.
+name = "catbox-router"
+main = "index.js"
+compatibility_date = "2026-11-18"
+
+[vars]
+# Control plane that serves GET /api/nodes. Strongly preferred over NODE_REGISTRY.
+CONTROL_PLANE_URL = "https://api.catbox.example.com"
+FRONTEND_ORIGIN = "https://your-frontend.vercel.app"
+
+# Static fallback (also settable as a secret via `wrangler secret put`):
+# NODE_REGISTRY = '[{"id":"node-1","url":"https://xxx.trycloudflare.com","status":"up","pending":0,"active":0}]'
+
+# Durable quota counters. Create with:
+#   npx wrangler kv namespace create CATBOX_QUOTA
+[[kv_namespaces]]
+binding = "QUOTA_KV"
+id = "replace-with-your-kv-namespace-id"
+
+# Secrets (set with `wrangler secret put NAME`, never commit values):
+#   wrangler secret put NODE_UPLOAD_SECRET

@@ -1,0 +1,13 @@
+# Credentials and runtime state — never commit
+.env
+remote.env
+*.log
+
+# Dependencies are installed by npm ci in CI
+node_modules/
+
+# Transient staging / local metadata DB
+data/
+
+# Local agent state
+.opencode/

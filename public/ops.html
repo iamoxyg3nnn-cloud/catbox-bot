@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Catbox — operations</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    body { margin: 0 auto; padding: 24px; max-width: 1000px; background: #11151c; color: #dce4ee; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    p.sub { margin: 0 0 24px; color: #8d9bb0; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .card { background: #1a2029; border: 1px solid #2b3442; border-radius: 10px; padding: 14px; }
+    .label { color: #8d9bb0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    .value { font-size: 26px; margin-top: 6px; }
+    .value small { font-size: 13px; color: #8d9bb0; }
+    canvas { width: 100%; height: 60px; display: block; margin-top: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #2b3442; }
+    th { color: #8d9bb0; font-weight: 600; }
+    .status-up { color: #6ee7a8; } .status-down { color: #f87171; }
+    footer { margin-top: 20px; color: #66748a; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Catbox operations</h1>
+  <p class="sub">Aggregate counters only — no tokens, filenames or user data. Refreshes every 5 seconds.</p>
+
+  <div class="grid">
+    <div class="card"><div class="label">Discord 429 rate</div><div class="value" id="rate">—</div><canvas id="rateChart"></canvas></div>
+    <div class="card"><div class="label">Staged on disk</div><div class="value" id="disk">—</div><canvas id="diskChart"></canvas></div>
+    <div class="card"><div class="label">Upload queue</div><div class="value" id="queue">—</div></div>
+    <div class="card"><div class="label">Journal backlog</div><div class="value" id="journal">—</div></div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div class="label">Nodes</div>
+    <table><thead><tr>
+      <th>Node</th><th>Status</th><th>Pending</th><th>Active</th><th>Staged</th><th>Last heartbeat</th>
+    </tr></thead><tbody id="nodes"><tr><td colspan="6">Loading…</td></tr></tbody></table>
+  </div>
+
+  <footer id="foot">Waiting for /api/metrics…</footer>
+
+  <script>
+    const history = { rate: [], disk: [] };
+    const el = id => document.getElementById(id);
+
+    function sparkline(canvas, values, color) {
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+      const h = canvas.height = canvas.clientHeight * devicePixelRatio;
+      ctx.clearRect(0, 0, w, h);
+      if (values.length < 2) return;
+      const max = Math.max(...values, 1);
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = (i / (values.length - 1)) * w;
+        const y = h - (v / max) * (h - 4) - 2;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2 * devicePixelRatio;
+      ctx.stroke();
+    }
+
+    function push(key, value) {
+      history[key].push(value);
+      if (history[key].length > 60) history[key].shift();
+    }
+
+    async function refresh() {
+      try {
+        const m = await fetch('/api/metrics', { cache: 'no-store' }).then(r => r.json());
+        const d = m.discord || { rateLimitPct: 0, requests: 0 };
+        const stagedBytes = (m.staging && m.staging.bytes) || 0;
+        el('rate').innerHTML = `${d.rateLimitPct || 0}% <small>of ${d.requests || 0} requests</small>`;
+        el('disk').innerHTML = `${(stagedBytes / 1048576).toFixed(1)} <small>MiB / ${(m.staging && m.staging.files) || 0} files</small>`;
+        const q = m.jobs || {};
+        el('queue').innerHTML = `${q.queued || 0} <small>queued · ${q.uploading || 0} active</small>`;
+        el('journal').textContent = String((m.journal && m.journal.unresolved) || 0);
+        push('rate', d.rateLimitPct || 0);
+        push('disk', stagedBytes / 1048576);
+        sparkline(el('rateChart'), history.rate, '#f59e0b');
+        sparkline(el('diskChart'), history.disk, '#60a5fa');
+
+        el('nodes').innerHTML = (m.nodes || []).map(n => `<tr>
+          <td>${n.id}</td>
+          <td class="status-${n.status === 'up' ? 'up' : 'down'}">${n.status}</td>
+          <td>${n.pending || 0}</td><td>${n.active || 0}</td>
+          <td>${((n.stagedBytes || 0) / 1048576).toFixed(1)} MiB</td>
+          <td>${n.lastHeartbeat ? new Date(n.lastHeartbeat).toLocaleTimeString() : '—'}</td>
+        </tr>`).join('') || '<tr><td colspan="6">No nodes registered</td></tr>';
+        el('foot').textContent = `backend: ${m.backend} · storage: ${m.storage} · uptime: ${m.uptimeSeconds}s`;
+        document.title = `Catbox ops — ${d.rateLimitPct || 0}% 429`;
+      } catch (err) {
+        el('foot').textContent = `Metrics unavailable: ${err.message}`;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

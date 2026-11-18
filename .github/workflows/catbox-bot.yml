@@ -1,0 +1,143 @@
+name: Catbox Bot (Supabase metadata)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catbox:
+    name: catbox-control-plane
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write runtime configuration
+        env:
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
+        run: |
+          cat > .env <<EOF
+          PORT=3000
+          PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+          TRUST_PROXY=1
+          DATA_DIR=./data
+          MAX_FILE_SIZE=20mb
+          DISCORD_BOT_ID=primary
+          DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+          DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
+          SUPABASE_URL=${SUPABASE_URL}
+          SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+          NODE_UPLOAD_SECRET=${NODE_UPLOAD_SECRET}
+          EOF
+          echo "Runtime configuration written (tokens are masked in logs)."
+
+      - name: Apply metadata schema
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python3 -c 'import json,sys; print(json.dumps({"sql": sys.stdin.read()}))' \
+            < infra/supabase/schema.sql > /tmp/catbox-schema.json
+          curl -fsS -X POST "$SUPABASE_URL/functions/v1/migrate" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/catbox-schema.json
+          echo "Metadata schema applied (idempotent)."
+
+      - name: Seed Discord bot registry
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+        run: |
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/discord_bots" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H 'Content-Type: application/json' \
+            -H 'Prefer: return=minimal,resolution=merge-duplicates' \
+            -d "[{\"bot_id\":\"primary\",\"channel_id\":\"${DISCORD_CHANNEL_ID}\",\"enabled\":true,\"health\":\"unknown\"}]"
+          echo "Discord bot registry seeded."
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL --retry 3 -o cloudflared \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          ./cloudflared --version
+
+      - name: Start control plane and tunnel
+        env:
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+        run: |
+          npm start > server.log 2>&1 &
+          SERVER_PID=$!
+          ./cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" \
+            > tunnel.log 2>&1 &
+          TUNNEL_PID=$!
+          trap 'kill "$SERVER_PID" "$TUNNEL_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; wait "$TUNNEL_PID" 2>/dev/null || true' EXIT
+
+          echo "$SERVER_PID" > server.pid
+          echo "$TUNNEL_PID" > tunnel.pid
+
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3000/api/config >/dev/null 2>&1; then
+              echo "Control plane healthy on localhost:3000"
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::Control plane exited during startup"
+              tail -50 server.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          for i in $(seq 1 60); do
+            if curl -fsS "$PUBLIC_BASE_URL/api/config" >/dev/null 2>&1; then
+              echo "Public endpoint healthy: $PUBLIC_BASE_URL"
+              break
+            fi
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              echo "::error::Cloudflared exited during startup"
+              tail -50 tunnel.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+          echo "CATBOX IS LIVE"
+          echo "  Upload API: $PUBLIC_BASE_URL/user/api.php"
+          echo "  Metrics:    $PUBLIC_BASE_URL/api/metrics"
+          echo "  Ops:        $PUBLIC_BASE_URL/ops"
+
+          sleep 18000
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catbox-logs
+          path: |
+            server.log
+            tunnel.log
+          if-no-files-found: ignore

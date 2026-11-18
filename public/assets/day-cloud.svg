@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" fill="none">
+  <defs>
+    <linearGradient id="veil" x1="82" y1="124" x2="704" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff8fc" stop-opacity=".76"/>
+      <stop offset=".42" stop-color="#f2dceb" stop-opacity=".64"/>
+      <stop offset="1" stop-color="#d5c5e2" stop-opacity=".24"/>
+    </linearGradient>
+    <linearGradient id="blush" x1="120" y1="126" x2="650" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#efc4d9" stop-opacity=".48"/>
+      <stop offset=".5" stop-color="#e4c9e3" stop-opacity=".36"/>
+      <stop offset="1" stop-color="#cbbde1" stop-opacity=".14"/>
+    </linearGradient>
+    <radialGradient id="mist" cx="0" cy="0" r="1" gradientTransform="translate(410 208) rotate(180) scale(390 56)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur-wide" x="-15%" y="-60%" width="130%" height="220%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+    <filter id="blur-soft" x="-10%" y="-45%" width="120%" height="190%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+  </defs>
+  <path d="M-36 219c102-48 165-17 252-56 87-39 136-24 216 9 87 36 153 15 224-24 78-43 136-18 181 20" stroke="url(#blush)" stroke-width="82" stroke-linecap="round" opacity=".7" filter="url(#blur-wide)"/>
+  <path d="M-28 206c106-40 164-13 247-50 83-37 136-24 216 7 83 32 151 12 222-25 73-38 132-15 177 19" stroke="url(#veil)" stroke-width="58" stroke-linecap="round" opacity=".88" filter="url(#blur-soft)"/>
+  <path d="M-20 190c103-30 157-8 239-42 79-33 130-20 207 7 80 28 149 8 219-25 68-32 124-15 172 13" stroke="#fffaff" stroke-width="13" stroke-linecap="round" opacity=".38" filter="url(#blur-soft)"/>
+  <path d="M-20 238c123-31 205-10 293-26 93-17 160 3 242-13 78-15 143-13 220 8" stroke="#c5b6d7" stroke-width="24" stroke-linecap="round" opacity=".22" filter="url(#blur-wide)"/>
+  <path d="M42 178c63-26 111-13 159-31 48-18 84-13 126 4" stroke="#fffaff" stroke-width="18" stroke-linecap="round" opacity=".34" filter="url(#blur-soft)"/>
+  <ellipse cx="410" cy="224" rx="370" ry="53" fill="url(#mist)"/>
+</svg>

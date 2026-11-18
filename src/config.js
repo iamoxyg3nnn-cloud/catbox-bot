@@ -1,0 +1,100 @@
+'use strict';
+
+const path = require('path');
+
+// Parse a size value that may be raw bytes or a friendly "20mb"/"20MiB" string.
+function parseSize(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const raw = String(value).trim().toLowerCase();
+  const match = /^(\d+(?:\.\d+)?)\s*(b|kb|kib|mb|mib|gb|gib)?$/.exec(raw);
+  if (!match) return fallback;
+  const n = Number(match[1]);
+  const unit = match[2] || 'b';
+  const factors = { b: 1, kb: 1024, kib: 1024, mb: 1024 ** 2, mib: 1024 ** 2, gb: 1024 ** 3, gib: 1024 ** 3 };
+  return Math.floor(n * factors[unit]);
+}
+
+// Discord bots may be supplied as a single token/channel pair (handy for the
+// first live verification) or as a JSON array for the 20-bot fleet.
+function parseBots() {
+  const raw = process.env.DISCORD_BOTS;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter(b => b && b.id && b.token && b.channelId)
+          .map(b => ({ id: String(b.id), token: String(b.token), channelId: String(b.channelId) }));
+      }
+    } catch { /* fall through to the single-bot form */ }
+  }
+  const token = process.env.DISCORD_BOT_TOKEN;
+  const channelId = process.env.DISCORD_CHANNEL_ID;
+  if (token && channelId) {
+    return [{ id: process.env.DISCORD_BOT_ID || 'primary', token, channelId }];
+  }
+  return [];
+}
+
+const config = {
+  // TCP port the HTTP server listens on.
+  port: parseInt(process.env.PORT || '3000', 10),
+
+  // Public origin used when building returned upload URLs (e.g. inside API
+  // responses). When unset, the origin is derived from each incoming request's
+  // Host header, so the clone works on localhost, LAN IPs or real hostnames
+  // without reconfiguration.
+  baseUrl: process.env.PUBLIC_BASE_URL || null,
+
+  // Where uploaded bytes are staged while they are being sent to Discord.
+  // This directory is transient: production must never treat it as storage.
+  dataDir: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
+  // Only in-flight upload bodies live here; there is no permanent files dir.
+  get tmpDir() { return path.join(this.dataDir, 'tmp'); },
+  get dbPath() { return path.join(this.dataDir, 'catbox.db'); },
+
+  // Discord's practical non-Nitro per-file limit. Configurable so chunking can
+  // be added later without changing callers.
+  maxFileSize: parseSize(process.env.MAX_FILE_SIZE, 20 * 1024 * 1024),
+
+  discord: {
+    // Only the mock transport exists for tests; production always uses Discord.
+    transport: process.env.DISCORD_TRANSPORT === 'mock' ? 'mock' : 'discord',
+    apiBase: process.env.DISCORD_API_BASE || 'https://discord.com/api/v10',
+    userAgent: process.env.DISCORD_USER_AGENT || 'DiscordBot (catbox-clone, 1.0)',
+    timeoutMs: parseInt(process.env.DISCORD_TIMEOUT_MS || '120000', 10),
+    maxRetries: parseInt(process.env.DISCORD_MAX_RETRIES || '3', 10),
+    bots: parseBots(),
+  },
+
+  // Max files accepted in one album (catbox historically caps albums at 500).
+  albumMaxFiles: 500,
+
+  // Session lifetime for logged-in accounts.
+  sessionTtlMs: 30 * 24 * 60 * 60 * 1000,
+
+  // Extensions refused outright, both client- and server-side.
+  blockedExtensions: ['exe', 'scr', 'doc', 'jar'],
+
+  // Litterbox-style temporary storage windows.
+  litterboxTimes: {
+    '1h': 60 * 60 * 1000,
+    '12h': 12 * 60 * 60 * 1000,
+    '24h': 24 * 60 * 60 * 1000,
+    '72h': 72 * 60 * 60 * 1000,
+  },
+
+  // Contact address shown on the contact page.
+  contactEmail: process.env.CONTACT_EMAIL || 'admin@localhost',
+
+  // Coarse per-IP upload throttle (window -> max upload requests).
+  rateLimit: { windowMs: 60 * 1000, maxUploads: 40 },
+};
+
+// Build an absolute public URL for a site-relative path.
+function publicUrl(req, sitePath) {
+  const base = config.baseUrl || `${req.protocol}://${req.get('host')}`;
+  return base.replace(/\/+$/, '') + sitePath;
+}
+
+module.exports = { config, publicUrl, parseSize };
