@@ -103,6 +103,13 @@ handling now have 8 offline contract tests; three latent bugs were fixed
 run the full flow against a real cloned Supabase instance — RLS policies and
 the actual `claim_upload_job()` concurrency behaviour cannot be validated offline.
 
+## Frontend on Vercel
+- Deployed `public/` as a static site to Vercel project `mew-pocket` (account `mewpocketbackend-4060`).
+- Production URL: `https://mew-pocket.vercel.app`.
+- `public/vercel.json` rewrites backend routes (`/api/*`, `/user/api.php`, `/litterbox/api.php`, `/files/*`, `/i/*`, `/ops`, contact/auth endpoints) to `https://api.mew-pocket.de5.net`, so the browser stays same-origin and no CORS changes were needed on the control plane. Static assets are served directly; the catch-all rewrite maps SPA/browser pages to `/index.html`.
+- Live checks through the Vercel domain all passed: `/`, `/api/config`, `/api/metrics`, `/styles.css`, `/assets/mewpocket.svg`, `/ops`, small upload + byte round-trip, 5 MiB upload + byte round-trip, and the full 20 MiB upload + byte round-trip. All test Discord messages and metadata rows were deleted (`files` and `upload_jobs` verified empty).
+- Vercel's GitHub auto-connect could not be enabled with the available token (no Login Connection on the account), so redeploys are manual: `npx vercel@latest deploy public --prod --yes --token $VERCEL_TOKEN` from the repo root. `public/.gitignore` ignores Vercel's local `.vercel` metadata.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `data/tmp` and `D:\catbox_staging` are transient.
