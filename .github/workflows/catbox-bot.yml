@@ -1,10 +1,33 @@
 name: Catbox Bot (Supabase metadata)
 
+# Runs on ubuntu-latest. This workflow exists only to keep the Catbox control
+# plane online. Supabase/Redis are hosted by a SEPARATE workflow in the
+# mew-pocket/Supabase-Actions repo; they must overlap because the bot uses them
+# for metadata. Each service owns its own Cloudflare tunnel, so concurrent
+# sessions do not fight over ingress.
+#
+# Never scheduled: no `schedule`/cron trigger, now or later. workflow_dispatch
+# is the only trigger. Each run queues its own successor, which waits in the
+# catbox-session group and starts the moment this run ends, so the bot stays up
+# 24/7 by chaining rather than by a timer. The successor always runs the
+# default branch. A full keep-alive resets the retry counter; repeated failures
+# are retried 5 links, then the chain stops and alerts instead of looping.
+
 on:
   workflow_dispatch:
+    inputs:
+      triggered_by:
+        description: 'session-chain:<n> (automatic) | blank if manual'
+        required: false
+        default: ''
+
+concurrency:
+  group: catbox-session
+  cancel-in-progress: false
 
 permissions:
   contents: read
+  actions: write   # a run queues its own successor
 
 jobs:
   catbox:
@@ -15,6 +38,45 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Queue the next session (early insurance)
+        # Runs before the bot so a session lost later (dead runner, cancel,
+        # timeout) still has a successor waiting. Queued pessimistically as a
+        # retry; the end-of-run step replaces it with a reset counter when the
+        # session is healthy.
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIGGERED_BY: ${{ inputs.triggered_by }}
+          CHAIN_REF: ${{ github.event.repository.default_branch || github.ref_name }}
+        run: |
+          n=0
+          if [[ "$TRIGGERED_BY" =~ ^session-chain:([0-9]{1,9})$ ]]; then
+            n="${BASH_REMATCH[1]}"
+          fi
+          max_retries=5
+          if (( n + 1 > max_retries )); then
+            echo "Retry budget spent ($n/$max_retries) - not queueing."
+            exit 0
+          fi
+          body="$(jq -n --arg ref "$CHAIN_REF" --arg tb "session-chain:$((n + 1))" \
+            '{ref: $ref, inputs: {triggered_by: $tb}}')"
+          for attempt in 1 2 3; do
+            if curl -sS --fail-with-body -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Content-Type: application/json" \
+                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches" \
+                -d "$body"; then
+              echo "Successor queued for $CHAIN_REF (retry $((n + 1))/$max_retries)."
+              exit 0
+            fi
+            echo "::warning::Dispatch attempt $attempt failed."
+            if (( attempt < 3 )); then sleep 15; fi
+          done
+          echo "::error::Could not queue the next session from the insurance step."
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -57,8 +119,8 @@ jobs:
           python3 -c 'import json,sys; print(json.dumps({"sql": sys.stdin.read()}))' \
             < infra/supabase/schema.sql > /tmp/catbox-schema.json
 
-          # Supabase is started by a separate workflow. Wait for it rather than
-          # racing it (a 502 here used to fail this job before DB was ready).
+          # Supabase is hosted by a separate workflow. Wait for its metadata
+          # endpoint rather than racing it (a 502 here used to fail the job).
           echo "Waiting for Supabase metadata endpoint..."
           READY=0
           for i in $(seq 1 120); do
@@ -104,7 +166,7 @@ jobs:
           chmod +x cloudflared
           ./cloudflared --version
 
-      - name: Start control plane and tunnel
+      - name: Start control plane and keep alive
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
@@ -116,58 +178,173 @@ jobs:
           NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
           MAX_FILE_SIZE: 20mb
           TRUST_PROXY: 1
+        shell: bash
         run: |
-          # The app reads process.env directly (no dotenv loader), so export the
-          # secrets here as well as writing .env for local reference.
-          npm start > server.log 2>&1 &
+          server_log="$RUNNER_TEMP/server.log"
+          tunnel_log="$RUNNER_TEMP/tunnel.log"
+          : > "$server_log"
+          : > "$tunnel_log"
+
+          # The app reads process.env directly (no dotenv loader).
+          npm start > "$server_log" 2>&1 &
           SERVER_PID=$!
           ./cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" \
-            > tunnel.log 2>&1 &
+            > "$tunnel_log" 2>&1 &
           TUNNEL_PID=$!
-          trap 'kill "$SERVER_PID" "$TUNNEL_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; wait "$TUNNEL_PID" 2>/dev/null || true' EXIT
 
-          echo "$SERVER_PID" > server.pid
-          echo "$TUNNEL_PID" > tunnel.pid
+          cleanup() {
+            kill -TERM "$TUNNEL_PID" "$SERVER_PID" 2>/dev/null || true
+            for _ in $(seq 1 10); do
+              kill -0 "$SERVER_PID" 2>/dev/null || break
+              sleep 1
+            done
+            kill -KILL "$SERVER_PID" "$TUNNEL_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          trap 'cleanup; exit 130' INT TERM
 
-          for i in $(seq 1 60); do
-            if curl -fsS http://localhost:3000/api/config >/dev/null 2>&1; then
-              echo "Control plane healthy on localhost:3000"
-              break
-            fi
+          # Readiness: local control plane AND the public tunnel URL.
+          ready=false
+          deadline=$((SECONDS + 180))
+          while (( SECONDS < deadline )); do
             if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "::error::Control plane exited during startup"
-              tail -50 server.log
+              echo "::error::Control plane exited before becoming ready"
+              tail -n 100 "$server_log"
               exit 1
-            fi
-            sleep 2
-          done
-
-          for i in $(seq 1 60); do
-            if curl -fsS "$PUBLIC_BASE_URL/api/config" >/dev/null 2>&1; then
-              echo "Public endpoint healthy: $PUBLIC_BASE_URL"
-              break
             fi
             if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
-              echo "::error::Cloudflared exited during startup"
-              tail -50 tunnel.log
+              echo "::error::cloudflared exited before becoming ready"
+              tail -n 100 "$tunnel_log"
               exit 1
             fi
-            sleep 2
+            if curl -fsS http://localhost:3000/api/config >/dev/null 2>&1 \
+               && curl -fsS "$PUBLIC_BASE_URL/api/config" >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 5
+          done
+          if [[ "$ready" != "true" ]]; then
+            echo "::error::Control plane did not become publicly ready in 180s"
+            tail -n 100 "$server_log"
+            tail -n 100 "$tunnel_log"
+            exit 1
+          fi
+
+          echo "======================================="
+          echo "        CATBOX CONTROL PLANE READY"
+          echo "======================================="
+          echo "  Session   : #$GITHUB_RUN_NUMBER"
+          echo "  Upload API: $PUBLIC_BASE_URL/user/api.php"
+          echo "  Metrics   : $PUBLIC_BASE_URL/api/metrics"
+          echo "  Ops       : $PUBLIC_BASE_URL/ops"
+          echo "======================================="
+
+          # Keep alive: stream logs, watch both processes, hold the session open.
+          # 330 min, not the 360 min job cap: a run killed by the cap never
+          # reaches SESSION_COMPLETE and would count as a failed chain link.
+          end=$((SECONDS + 330 * 60))
+          s_lines=0
+          t_lines=0
+          while (( SECONDS < end )); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              wait "$SERVER_PID" && code=0 || code=$?
+              echo "::error::Control plane exited unexpectedly (exit code $code)"
+              tail -n 200 "$server_log"
+              exit 1
+            fi
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              wait "$TUNNEL_PID" && code=0 || code=$?
+              echo "::error::cloudflared exited unexpectedly (exit code $code)"
+              tail -n 200 "$tunnel_log"
+              exit 1
+            fi
+
+            s_total=$(wc -l < "$server_log")
+            if (( s_total > s_lines )); then
+              sed -n "$((s_lines + 1)),${s_total}p" "$server_log"
+              s_lines=$s_total
+            fi
+            t_total=$(wc -l < "$tunnel_log")
+            if (( t_total > t_lines )); then
+              sed -n "$((t_lines + 1)),${t_total}p" "$tunnel_log"
+              t_lines=$t_total
+            fi
+
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$PUBLIC_BASE_URL/api/config" 2>/dev/null || echo 000)
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S') UTC] Catbox alive (PID $SERVER_PID) - HTTP $code"
+            sleep 30
           done
 
-          echo "CATBOX IS LIVE"
-          echo "  Upload API: $PUBLIC_BASE_URL/user/api.php"
-          echo "  Metrics:    $PUBLIC_BASE_URL/api/metrics"
-          echo "  Ops:        $PUBLIC_BASE_URL/ops"
-
-          sleep 18000
+          echo "SESSION_COMPLETE=true" >> "$GITHUB_ENV"
 
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: catbox-logs
+          name: catbox-logs-${{ github.run_id }}
           path: |
-            server.log
-            tunnel.log
+            ${{ runner.temp }}/server.log
+            ${{ runner.temp }}/tunnel.log
+          retention-days: 3
           if-no-files-found: ignore
+
+      - name: Queue the next session (session end)
+        # Healthy full keep-alive resets the counter; anything else counts up,
+        # and once the budget is spent the chain stops with an alert.
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIGGERED_BY: ${{ inputs.triggered_by }}
+          CHAIN_REF: ${{ github.event.repository.default_branch || github.ref_name }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          n=0
+          if [[ "$TRIGGERED_BY" =~ ^session-chain:([0-9]{1,9})$ ]]; then
+            n="${BASH_REMATCH[1]}"
+          fi
+          max_retries=5
+          next=$((n + 1))
+          if [[ "${SESSION_COMPLETE:-}" == "true" ]]; then next=0; fi
+
+          stop_reason=""
+          if (( next > max_retries )); then
+            stop_reason="$n sessions in a row ended early or never started"
+          else
+            body="$(jq -n --arg ref "$CHAIN_REF" --arg tb "session-chain:$next" \
+              '{ref: $ref, inputs: {triggered_by: $tb}}')"
+            queued=false
+            for attempt in 1 2 3; do
+              if curl -sS --fail-with-body -X POST \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  -H "Content-Type: application/json" \
+                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches" \
+                  -d "$body"; then
+                queued=true
+                break
+              fi
+              echo "::warning::Dispatch attempt $attempt failed."
+              if (( attempt < 3 )); then sleep 15; fi
+            done
+            if [[ "$queued" == "true" ]]; then
+              echo "Successor queued for $CHAIN_REF (retry $next/$max_retries)."
+              exit 0
+            fi
+            stop_reason="GitHub refused the dispatch (see warnings above)"
+          fi
+
+          echo "::error::Session chain stopped: $stop_reason. Bot is down until a run is started."
+          if [[ -n "${ALERT_WEBHOOK_URL:-}" ]]; then
+            payload="$(jq -n --arg c ":warning: **catbox-bot** session chain stopped: $stop_reason. Start a run: https://github.com/$GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml" '{content: $c}')"
+            if curl -sS --fail-with-body -X POST -H "Content-Type: application/json" \
+                -d "$payload" "$ALERT_WEBHOOK_URL"; then
+              echo "Discord alert sent."
+            else
+              echo "::warning::Discord alert failed."
+            fi
+          else
+            echo "::warning::ALERT_WEBHOOK_URL not set - no Discord alert sent."
+          fi
