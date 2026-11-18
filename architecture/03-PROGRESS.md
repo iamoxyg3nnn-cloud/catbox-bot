@@ -65,6 +65,14 @@ Next agent: read `01-ARCHITECTURE.md` and `02-PHASES.md` first, then continue fr
 - Fixed two Supabase linter WARNs by re-applying the repo's own `009-security-linter-fixes.sql` via `untrack` + `push`: `anon`/`authenticated` can no longer execute the `SECURITY DEFINER` auth hook; `supabase_auth_admin` still can. The `rls_enabled_no_policy` INFO on `_schema_migrations` is intentional per upstream README.
 - All verification artifacts (Discord messages + metadata rows) were deleted afterwards.
 
+### Session 5 — GitHub deployment of the bot (2026-11-18/19)
+- Created private repo `mew-pocket/catbox-bot` from this checkout. `.gitignore` excludes `.env`, `data/`, `node_modules/`, `.opencode/`, logs — no tokens/keys are tracked.
+- Added `.github/workflows/catbox-bot.yml` (`workflow_dispatch`, 6h timeout). It writes runtime env, waits for the separate Supabase workflow, applies `infra/supabase/schema.sql`, seeds `discord_bots`, starts `npm start` + cloudflared, and holds the LIVE window.
+- All 7 runtime secrets set on the repo (never in code): `PUBLIC_BASE_URL`, `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `NODE_UPLOAD_SECRET`, `CF_TUNNEL_TOKEN`.
+- **Tunnel separation**: both workflows initially shared one tunnel token; two cloudflared instances on one tunnel made Cloudflare load-balance requests, so Supabase's tunnel health checks got 502 and the run self-terminated. Fixed by creating a dedicated `catbox-api` tunnel (`070c0a03-133e-445d-910e-dee323d856a9`), repointing the `api.` CNAME to it with `cloudflared tunnel route dns --overwrite-dns`, removing `api.` from the `catbox-supabase` ingress, and giving catbox-bot its own token. `supabase-host.yml` was left unmodified.
+- Workflow fixes pushed: pass secrets into the server **process** (the app reads `process.env`, not `.env`), and wait for Supabase readiness before applying schema (avoiding a startup race 502).
+- **Live GitHub E2E passed 9/9** against `https://api.mew-pocket.de5.net`: config endpoint, Supabase backend, Discord storage, sync upload (plain-text URL), sync byte round-trip, async `202` + `status_url`, job reaching `ready`, async byte round-trip, artifact cleanup. All test Discord messages and metadata rows were deleted afterwards (tables verified empty).
+
 ## Remaining (ordered)
 
 1. ~~**Live Discord verification** with one bot~~ ✅ Done (2026-11-18): `verify-discord.js` passed 1/1. Channel ID `1555968938540666926` was resolved from the Discord backup webhook's `channel_id`; the webhook itself remains backup-only. Next scale-out: 20 bots/channels via `infra/RUNBOOK.md` §3.
