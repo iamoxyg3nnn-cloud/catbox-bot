@@ -24,6 +24,7 @@ const bruteForce = require('./src/bruteForce');
 const runtimeFlags = require('./src/runtimeFlags');
 const adminApi = require('./src/adminApi');
 const metadataMirror = require('./src/metadataMirror');
+const nodeRouting = require('./src/nodeRouting');
 
 const app = express();
 app.disable('x-powered-by');
@@ -97,6 +98,19 @@ function safeUpload(req, res, next) {
   });
 }
 
+// A spoke is reachable only through its per-session public tunnel. Require the
+// hub secret so a discovered tunnel URL cannot be abused for direct uploads.
+// The hub always sends this header when it forwards a staging file.
+function spokeAuth(req, res, next) {
+  if (config.nodeMode) {
+    const secret = process.env.NODE_UPLOAD_SECRET;
+    if (!secret || req.get('X-Catbox-Secret') !== secret) {
+      return res.status(403).type('text/plain').send('Forbidden.');
+    }
+  }
+  next();
+}
+
 app.use(auth.sessionMiddleware);
 app.use(adminAuth.middleware);
 
@@ -111,16 +125,20 @@ app.use(['/user/api.php', '/litterbox/api.php', '/api/uploads'], (req, res, next
 
 // Short, resumable browser uploads. The signed token is a capability: each
 // chunk and the final commit are independently authenticated and short-lived.
-uploadSessions.register(app, {
-  enqueue: details => jobs.enqueue(details),
-});
+// Spokes only accept hub-forwarded multipart uploads; they never claim jobs.
+if (!config.nodeMode) {
+  uploadSessions.register(app, {
+    enqueue: details => jobs.enqueue(details),
+  });
+}
 
 // Browser experience and static assets.
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Operator console and its API. Registered before the generic catch-all so
-// /admin resolves to the console instead of the public SPA shell.
-adminApi.register(app);
+// /admin resolves to the console instead of the public SPA shell. There is one
+// admin console on the hub; spokes do not expose one.
+if (!config.nodeMode) adminApi.register(app);
 
 /* ------------------------------- API ---------------------------------- */
 
@@ -338,13 +356,54 @@ app.get('/api/albums/:short', asyncRoute(async (req, res) => {
   });
 }));
 
-// Multipart parsing first (file uploads); urlencoded bodies were parsed
-// by the global middleware above for the form-style request types.
-app.all('/user/api.php', safeUpload, (req, res) => {
+/* -------------------------- hub / spoke routing ------------------------- */
+
+// The hub forwards synchronous multipart uploads to the least-loaded healthy
+// spoke so each bot can live in its own repo. Any failure falls back to the
+// local storage path, so a dead spoke never becomes a user-visible outage.
+// Async uploads stay local: their job ids are owned by this process.
+async function handleHubUpload(req, res, localHandler) {
+  const forwardable = !config.nodeMode
+    && req.file
+    && req.get('X-Catbox-Async') !== '1';
+  if (!forwardable) return localHandler(req, res);
+
+  let node = null;
+  try {
+    node = nodeRouting.pickNode(await db.listNodes());
+  } catch (err) {
+    console.warn('[hub] node registry unavailable:', err.message);
+  }
+  if (!node) return localHandler(req, res);
+
+  try {
+    const result = await nodeRouting.forwardUpload(node, req);
+    if (result.status >= 200 && result.status < 300 && /^https?:\/\//.test(result.text)) {
+      // The spoke stored the bytes, so the hub's staged copy is no longer
+      // needed. The local handler normally does this; do it here as well.
+      const staged = req.file && req.file.path;
+      if (typeof req.releaseStaged === 'function') req.releaseStaged();
+      if (staged) await fs.promises.unlink(staged).catch(() => {});
+      return res.status(result.status).type('text/plain; charset=utf-8').send(result.text);
+    }
+    throw new Error(`spoke returned ${result.status}: ${result.text.slice(0, 120)}`);
+  } catch (err) {
+    console.warn(`[hub] forward to ${node.node_id || node.id} failed: ${err.message}; using local upload`);
+    return localHandler(req, res);
+  }
+}
+
+function localApiUpload(req, res) {
   api.handleApi(req, res).catch(err => {
     console.error('api error:', err);
     if (!res.headersSent) res.status(500).type('text/plain').send('Internal server error.');
   });
+}
+
+// Multipart parsing first (file uploads); urlencoded bodies were parsed
+// by the global middleware above for the form-style request types.
+app.all('/user/api.php', spokeAuth, safeUpload, (req, res) => {
+  handleHubUpload(req, res, localApiUpload);
 });
 
 /* ---------------------------- file serving ----------------------------- */
@@ -459,11 +518,15 @@ app.post('/do_contact.php', asyncRoute(async (req, res) => {
   res.type('text/plain; charset=utf-8').send('Thanks. Your message has been recorded.');
 }));
 
-app.all('/litterbox/api.php', safeUpload, (req, res) => {
+function localLitterboxUpload(req, res) {
   litterboxUpload(req, res).catch(err => {
     console.error('litterbox error:', err);
     if (!res.headersSent) res.status(500).type('text/plain').send('Internal server error.');
   });
+}
+
+app.all('/litterbox/api.php', spokeAuth, safeUpload, (req, res) => {
+  handleHubUpload(req, res, localLitterboxUpload);
 });
 
 /* --------------------------- account actions --------------------------- */
@@ -534,24 +597,62 @@ async function purgeExpired() {
     }
   }
 }
-setInterval(() => {
-  purgeExpired().catch(err => console.error('purge sweep failed:', err));
-}, 60 * 60 * 1000).unref();
+// Only the hub purges expired files: a spoke holds one bot token and cannot
+// delete messages belonging to the other bots.
+if (!config.nodeMode) {
+  setInterval(() => {
+    purgeExpired().catch(err => console.error('purge sweep failed:', err));
+  }, 60 * 60 * 1000).unref();
+}
 
 if (require.main === module) {
   db.getDb();
 
-  // Supabase can come back empty after its host restarts. Restore the
-  // Discord-backed metadata mirror before the job runner starts, so workers
-  // never race a half-restored table.
-  metadataMirror.start()
-    .catch(err => console.error('metadata mirror failed to start:', err))
-    .finally(() => {
-      jobs.start().catch(err => console.error('job runner failed to start:', err));
-    });
+  // A spoke owns one bot and nothing else. It must not run the job runner,
+  // metadata mirror or admin console: all three assume a single writer.
+  nodeRouting.startHeartbeat();
+
+  if (!config.nodeMode) {
+    // Supabase can come back empty after its host restarts. Restore the
+    // Discord-backed metadata mirror before the job runner starts, so workers
+    // never race a half-restored table.
+    metadataMirror.start()
+      .catch(err => console.error('metadata mirror failed to start:', err))
+      .finally(() => {
+        jobs.start().catch(err => console.error('job runner failed to start:', err));
+      });
+
+    // A runner that dies without a graceful shutdown leaves status='up' in the
+    // registry forever. Reap rows whose heartbeat has gone stale so the hub
+    // stops routing uploads to a tunnel that no longer exists.
+    const reapStaleNodes = async () => {
+      try {
+        const now = Date.now();
+        for (const node of await db.listNodes()) {
+          if (node.node_id === 'local' || node.status === 'down') continue;
+          if (now - (Number(node.last_heartbeat) || 0) <= config.nodeStaleAfterMs) continue;
+          await db.upsertNode({
+            nodeId: node.node_id,
+            hostname: node.hostname,
+            webUrl: node.web_url,
+            status: 'down',
+            draining: true,
+            pending: 0,
+            active: 0,
+            stagedBytes: 0,
+            stagedFiles: 0,
+          });
+          console.log(`[hub] reaped stale node ${node.node_id}`);
+        }
+      } catch (err) {
+        console.warn('[hub] stale-node sweep failed:', err.message);
+      }
+    };
+    setInterval(reapStaleNodes, config.nodeHeartbeatMs).unref();
+  }
 
   const server = app.listen(config.port, () => {
-    console.log(`File sharing service listening on http://localhost:${config.port}`);
+    console.log(`File sharing service listening on http://localhost:${config.port}${config.nodeMode ? ' (spoke)' : ' (hub)'}`);
   });
   // Never let a half-sent body hold a connection indefinitely. The browser
   // watchdog reports a stalled transfer long before this ceiling is reached.
@@ -562,11 +663,16 @@ if (require.main === module) {
   const shutdown = (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`Received ${signal}; persisting final metadata snapshot.`);
-    metadataMirror.flush().finally(() => {
-      metadataMirror.stop();
+    console.log(`Received ${signal}; shutting down.`);
+    const finish = () => {
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 5000).unref();
+    };
+    if (config.nodeMode) return finish();
+    console.log('Persisting final metadata snapshot.');
+    metadataMirror.flush().finally(() => {
+      metadataMirror.stop();
+      finish();
     });
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));

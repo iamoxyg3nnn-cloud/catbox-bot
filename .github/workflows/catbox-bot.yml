@@ -118,7 +118,7 @@ jobs:
           try {
             $msi = "$env:RUNNER_TEMP\tailscale-setup.msi"
             if (-not (Test-Path $msi)) {
-              Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' \
+              Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' `
                 -OutFile $msi -UseBasicParsing -TimeoutSec 120
             }
             $rc = (Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/quiet', '/norestart') -Wait -PassThru).ExitCode

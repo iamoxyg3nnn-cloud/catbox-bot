@@ -65,6 +65,18 @@ const config = {
   get tmpDir() { return this.stagingDir || path.join(this.dataDir, 'tmp'); },
   get dbPath() { return path.join(this.dataDir, 'catbox.db'); },
 
+  // Hub-and-spoke deployment. A spoke (NODE_MODE=node) runs exactly one Discord
+  // bot, skips the admin console, job runner and metadata mirror (all of which
+  // are single-writer), and heartbeats its per-session public URL to the hub.
+  // The hub forwards uploads to the least-loaded healthy spoke and falls back
+  // to its own bots when no spoke is available.
+  nodeMode: process.env.NODE_MODE === 'node',
+  nodeId: process.env.NODE_ID || 'local',
+  controlPlaneUrl: process.env.CONTROL_PLANE_URL || null,
+  nodePublicUrl: process.env.NODE_PUBLIC_URL || null,
+  nodeHeartbeatMs: parseInt(process.env.NODE_HEARTBEAT_MS || '15000', 10),
+  nodeStaleAfterMs: parseInt(process.env.NODE_STALE_AFTER_MS || '60000', 10),
+
   // Discord's practical non-Nitro per-file limit. Configurable so chunking can
   // be added later without changing callers.
   maxFileSize: parseSize(process.env.MAX_FILE_SIZE, 20 * 1024 * 1024),

@@ -193,6 +193,13 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Failover hardening in `src/storage/discord.js`: `upload()` now tries a sibling bot within the same request when one returns 401/403 (the staged file is re-streamed per attempt; nonce/idempotency is unchanged). A retired bot is put back on probation after an exponential backoff (60s → 120s → … → 60m) and permanently recovers on its first success, so inviting a missing bot needs no redeploy. Two new unit tests cover sibling failover and backoff recovery; 64/64 tests pass.
 - Fix (commit `02aa23c`): the registry seed initially failed with Postgres `23505` because `discord_bots.channel_id` was `unique`, so five bots sharing one upload channel could not all be registered. Dropped that constraint in `infra/supabase/schema.sql` and applied the same `ALTER TABLE ... DROP CONSTRAINT IF EXISTS discord_bots_channel_id_key` to the live Supabase database. Verified `pg_constraint` now contains only `discord_bots_pkey`, the seed step passes, all five rows exist, and the control plane is healthy again.
 
+## One repository per bot (hub and spokes)
+- Decided on a hub-and-spoke topology after research: five full Express stacks would race on (1) the global `claim_upload_job()` (a repo can claim a job whose staged bytes live on another runner), (2) the single-writer Discord metadata mirror, and (3) the one tunnel/domain configuration. See `PLAN.md`.
+- `catbox-bot` stays the hub (API, admin, downloads, jobs, mirror, `/api/nodes`). New repos `catbox-bot-1` … `catbox-bot-5` are spokes: `NODE_MODE=node`, one bot token each, per-session quick tunnel, 15s heartbeat. Spokes do not run admin, jobs, mirror or expiry purge.
+- Added `src/nodeRouting.js`: `pickNode()` (least-loaded, ignores stale/down/draining), `forwardUpload()` (streams the hub's staged multipart file to a spoke), and `startHeartbeat()` (spoke registers/retires its URL). Hub forwards in `server.js` and falls back locally on any error; forwarded staged bytes are deleted after success.
+- Hardened spokes with `X-Catbox-Secret` check on the upload routes so a discovered tunnel URL cannot be used directly. Fixed the Tailscale step's PowerShell backslash-continuation bug (line 121) so RDP setup can actually run.
+- Added 4 unit tests (`test/nodeRouting.test.js`); full suite is 68/68 green.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `STAGING_DIR` (`D:\catbox_staging` in production) and `data/tmp` locally are transient.

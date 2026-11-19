@@ -229,6 +229,25 @@ a `catbox-session` concurrency chain; there is no cron schedule. Each session:
   Every bot must be invited to the Discord server and allowed to post, read and
   delete in that channel; bot tokens cannot grant themselves those permissions.
 
+### One repository per bot (hub and spokes)
+
+Each bot now lives in its own repository so it has an independent runner, tunnel
+and token:
+
+- `mew-pocket/catbox-bot` is the **hub**: public API, admin console, download
+  proxy, job runner, metadata mirror and the `/api/nodes` registry. It keeps all
+  five bot tokens so it can resolve and delete any file.
+- `mew-pocket/catbox-bot-1` … `catbox-bot-5` are **spokes**. Each runs with
+  `NODE_MODE=node`, exactly one Discord token, its own transient
+  `D:\catbox_staging`, and a per-session Cloudflare quick tunnel. A spoke skips
+  the admin console, job runner and metadata mirror because those assume a
+  single writer. It heartbeats its public URL to the hub every 15 seconds.
+
+The hub streams each synchronous upload to the least-loaded healthy spoke and
+returns the spoke's plain-text URL unchanged. If no spoke is healthy, it falls
+back to its own bots, so a dead spoke never causes downtime. Stale spokes (no
+heartbeat for 60s) are reaped automatically. See `PLAN.md` for the full design.
+
 Supabase + Redis remain in the separate, unmodified `mew-pocket/Supabase-Actions`
 repository with their own tunnel. This repository owns only the control plane.
 
