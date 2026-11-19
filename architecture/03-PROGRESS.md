@@ -212,6 +212,14 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Live checks passed: API and Vercel origins return `200` for `/admin`, `/api/nodes`, `/api/metrics` and browser pages; Vercel `/admin` and `/api/:path*` are rewrites (no redirects); sync upload returns a plain-text URL; async `X-Catbox-Async: 1` returns `202` + job id and reaches `ready`; downloaded bytes match; contact messages persist in `messages`; admin `ADMIN_TOKEN` exchange issues a session with CSRF, overview/audit load, and a write without `X-CSRF-Token` is rejected `403`; a temporary normal account registered and logged in without gaining admin, then was removed.
 - **Note:** the "user asked about 6 bots" was the hub plus five spokes (six running app instances), not six Discord accounts. There are still exactly five Discord bots; `catbox-bot` is the hub and must not be deleted.
 
+## Windows RDP + D: design copied to every spoke (2026-11-19)
+- Reference repo `chuglii/backend` was investigated read-only. Its "150+ GB" is per-runner free D: scratch (134–216 GiB across 18 ephemeral `windows-latest` runners in `fleet-sweep.log`), **not** a pooled volume and **not** durable; RDP-over-Tailscale is operator access, and bytes actually persist on external hosts + a Supabase journal. There is no literal "150 GB" string in that repo.
+- The user's requirement — copy the design so all bots run as GitHub Actions Windows RDP sessions using local D: as staging for the life of the run — is now implemented on the hub **and** all five spokes.
+- `deploy/catbox-spoke.yml.template` now mirrors the hub: job-level `TAILSCALE_AUTH_KEY`, the `Enable Tailscale RDP access` step (MSI install, RDP user + firewall, `tailscale up`, userspace fallback, RDP credentials printed per session), disk-free logging, and a no-key warning step. `__NODE_ID__` is included in the Tailscale hostname so each spoke is distinguishable on the tailnet.
+- `TAILSCALE_AUTH_KEY` was seeded into all five spokes with a temporary bootstrap workflow, then the workflow and the high-scope `BOOTSTRAP_TOKEN` secret were removed. No secret values were printed or committed.
+- Verified live: all five spoke workflows run with `staging=success` and `rdp=success`; spoke-1's log showed `D: free=147GB` and a Tailscale RDP IP; six consecutive hub uploads landed on all five bots (`bot3, bot4, bot5, primary, bot2, bot3`), all `ready`.
+- D: bytes remain transient: staged files are deleted only after Discord confirms the attachment and Supabase records the metadata. RDP/Tailscale do not change that lifecycle.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `STAGING_DIR` (`D:\catbox_staging` in production) and `data/tmp` locally are transient.
