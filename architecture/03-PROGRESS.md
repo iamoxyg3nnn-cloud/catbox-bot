@@ -157,6 +157,8 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - `Supabase-Actions` remains verbatim; no upstream workflow or schema was touched. Tests: 51/51, including mirror encryption, empty-snapshot skipping, guarded restore and pruning.
 - Login persistence: the `catsess` cookie only works while its row survives in `sessions`, which points at `users.id`. The mirror now snapshots `sessions` too and relinks each `user_id` by userhash after accounts are restored with regenerated identity ids. Accounts no longer need to be recreated, and existing session cookies keep working after a flush.
 - If Supabase empties while the bot is already running, `tick()` now calls `restoreOnce()` immediately instead of waiting for the next bot session to boot (was up to a 330-minute gap). Restores are serialised so a concurrent startup/tick/shutdown cannot double-write.
+- Outage hardening: the bot's Supabase readiness probe used to accept any code except 502/503/000, so Cloudflare's 530 ("Tunnel error") was mistaken for a healthy backend. The schema POST then failed with 530 and the session chain burned its five-retry budget in seconds. The probe now accepts only real 2xx-4xx answers.
+- The upstream Supabase workflow currently ends its session with "Next run: managed by Cloudflare Worker (node-watchman)", but no such watcher exists in this workspace. When that session ends, both tunnels return 530 and the bot cannot start. Until an external watcher exists, Supabase must be restarted manually via its `workflow_dispatch` before the bot.
 
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.

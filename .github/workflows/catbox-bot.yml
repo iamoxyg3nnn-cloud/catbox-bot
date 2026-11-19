@@ -149,7 +149,10 @@ jobs:
           for i in $(seq 1 120); do
             code=$(curl -sS -o /dev/null -w '%{http_code}' "$SUPABASE_URL/rest/v1/" \
               -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" 2>/dev/null || echo 000)
-            if [ "$code" != "502" ] && [ "$code" != "503" ] && [ "$code" != "000" ]; then
+            # Cloudflare returns 530 for a dead tunnel. Treating any non-502/503
+            # as ready let a 530 through, then the schema POST failed and the
+            # chain burned all five retries. Only real HTTP answers count.
+            if [[ "$code" =~ ^[2-4][0-9][0-9]$ ]]; then
               READY=1
               echo "Supabase ready after $i checks (HTTP $code)."
               break
