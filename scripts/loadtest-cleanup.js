@@ -14,7 +14,7 @@ const os = require('os');
 const BASE = process.env.CATBOX_BASE || 'https://api.mew-pocket.de5.net';
 const PREFIXES = process.argv[2]
   ? [process.argv[2]]
-  : ['load20', 'base5', 'fixed20', 'small20', 'scale40', 'scale80', 'scale150', 'scale150b', 'channelprobe'];
+  : ['load20', 'base5', 'fixed20', 'small20', 'scale40', 'scale80', 'scale150', 'scale150b', 'scale150small', 'channelprobe'];
 
 function readEnv() {
   const out = {};
