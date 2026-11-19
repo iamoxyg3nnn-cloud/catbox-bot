@@ -25,6 +25,12 @@ test('pickNode chooses the least-loaded healthy spoke', () => {
   assert.equal(score(node('x', { pending: 3, active: 2 })), 7);
 });
 
+test('pickNode rotates between equally healthy spokes', () => {
+  const fleet = [node('bot-2'), node('bot-1'), node('bot-3')];
+  const picked = [0, 1, 2].map(cursor => pickNode(fleet, now, 60_000, cursor));
+  assert.deepEqual(picked.map(n => n.node_id), ['bot-1', 'bot-2', 'bot-3']);
+});
+
 test('pickNode ignores stale, down, unhealthy, draining and URL-less nodes', () => {
   const chosen = pickNode([
     node('stale', { last_heartbeat: now - 120_000 }),

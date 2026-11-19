@@ -362,6 +362,7 @@ app.get('/api/albums/:short', asyncRoute(async (req, res) => {
 // spoke so each bot can live in its own repo. Any failure falls back to the
 // local storage path, so a dead spoke never becomes a user-visible outage.
 // Async uploads stay local: their job ids are owned by this process.
+let routeCursor = 0;
 async function handleHubUpload(req, res, localHandler) {
   const forwardable = !config.nodeMode
     && req.file
@@ -370,7 +371,7 @@ async function handleHubUpload(req, res, localHandler) {
 
   let node = null;
   try {
-    node = nodeRouting.pickNode(await db.listNodes());
+    node = nodeRouting.pickNode(await db.listNodes(), undefined, undefined, routeCursor++);
   } catch (err) {
     console.warn('[hub] node registry unavailable:', err.message);
   }

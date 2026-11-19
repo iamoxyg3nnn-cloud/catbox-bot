@@ -23,7 +23,7 @@ function score(node) {
 
 // Dead runners must stop receiving traffic even if their last heartbeat said
 // "up". Heartbeats are 15s apart, so 60s without one means the session ended.
-function pickNode(nodes, now = Date.now(), staleAfterMs = config.nodeStaleAfterMs) {
+function pickNode(nodes, now = Date.now(), staleAfterMs = config.nodeStaleAfterMs, cursor = 0) {
   const alive = (nodes || []).filter(node =>
     node && node.web_url
     && node.status !== 'down'
@@ -32,7 +32,12 @@ function pickNode(nodes, now = Date.now(), staleAfterMs = config.nodeStaleAfterM
     && (now - (Number(node.last_heartbeat) || 0)) <= staleAfterMs
   );
   if (!alive.length) return null;
-  return alive.reduce((best, node) => score(node) < score(best) ? node : best, alive[0]);
+  const best = Math.min(...alive.map(score));
+  // Spokes report zero in-flight work, so scores are usually tied. Rotate ties
+  // to spread uploads across the whole fleet instead of pinning one runner.
+  const tied = alive.filter(node => score(node) === best)
+    .sort((a, b) => String(a.node_id || a.id).localeCompare(String(b.node_id || b.id)));
+  return tied[cursor % tied.length];
 }
 
 // Build a multipart body that looks exactly like the browser's upload, using a
