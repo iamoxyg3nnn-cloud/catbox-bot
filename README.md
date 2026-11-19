@@ -41,6 +41,7 @@ Optional environment variables:
 | `UPSTASH_REDIS_REST_URL` | unset             | Enables Redis counters + CDN URL cache (card-free free tier) |
 | `UPSTASH_REDIS_REST_TOKEN` | unset           | Upstash REST token                                        |
 | `NODE_UPLOAD_SECRET` | unset                | Shared secret for `/internal/files` and node `/upload`    |
+| `ADMIN_TOKEN`        | unset                | Enables the `/admin` operator console                     |
 | `NODE_REGISTRY`      | unset                | Worker-side JSON list of alive node tunnels               |
 
 To start over, stop the server and delete the `data/` directory; it is
@@ -60,9 +61,32 @@ recreated (empty) on the next start.
 - `POST /internal/nodes/heartbeat` — node load heartbeat (requires `X-Catbox-Secret`)
 - `POST /internal/journal` — report a Discord write whose metadata commit failed
 - `POST /internal/journal/reconcile` — trigger a reconciliation pass manually
+- `GET /admin` — operator console (requires `ADMIN_TOKEN`; Vercel redirects here from its own `/admin`)
 - Browser pages are served at `/`, `/litterbox.php`, `/faq.php`, `/tools.php`, `/legal.php`, `/contact.php`, `/user/login.php`, `/user/register.php`, `/user/forgotpassword.php`, `/user/index.php`, `/user/albums.php`, and `/a/<short>`.
 - Account form actions remain available as plain-text POST endpoints: `/user/dologin.php`, `/user/doregister.php`, `/user/reset_password.php`; `GET /user/logout.php` ends a session.
 - The signed-in library uses `GET /api/dashboard` for the current account's files and albums, and `GET /api/albums/<short>` for public album contents.
+
+## Admin console
+
+Set `ADMIN_TOKEN` to a long random value (also stored as the GitHub Actions
+secret of the same name) and open `/admin` on the API origin. The console gates
+itself with an HttpOnly, SameSite=Strict, signed 12-hour cookie — the token is
+never written to disk or localStorage. From there an operator can:
+
+- review live counts, runtime config, Discord 429 rate and journal backlog;
+- browse and search every metadata table (users, sessions, files, albums,
+  messages, upload jobs, nodes, Discord bots, orphan journal);
+- delete files, albums, contact messages and journal entries, with file
+  deletion removing the Discord message **before** the metadata row;
+- delete an account and purge every file it owns;
+- edit safe fields (file status, album text, job state, bot health/enabled,
+  node draining, journal resolution);
+- requeue or fail stuck upload jobs, reconcile the orphan journal;
+- pause/resume all uploads for maintenance and run Supabase/edge/bot health checks.
+
+The Vercel frontend redirects `/admin` to the API origin so the admin cookie is
+same-origin. Session tokens are excluded from the public metrics endpoint, and
+password hashes are stripped from all admin responses.
 
 The regular and temporary upload pages cycle their corner artwork every 10 seconds
 using `public/assets/waifu/manifest.json`. Images are preloaded before switching,

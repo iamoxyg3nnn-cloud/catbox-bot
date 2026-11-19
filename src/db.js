@@ -518,6 +518,97 @@ function journalStats() {
   ).get(Date.now() - 60_000);
 }
 
+/* ---------------- admin (whitelisted generic access) ---------------- */
+
+// The admin console needs read access to every metadata table, but a generic
+// query helper must never become an arbitrary-SQL endpoint. Both the table and
+// every filter key are validated against fixed allow-lists and values are
+// always bound as parameters.
+const ADMIN_TABLES = new Set([
+  'users', 'sessions', 'files', 'albums', 'album_files', 'messages',
+  'upload_jobs', 'discord_bots', 'nodes', 'upload_journal',
+]);
+const ADMIN_SEARCH = {
+  users: ['username', 'email', 'userhash'],
+  sessions: ['token'],
+  files: ['name', 'original_name', 'owner_hash', 'sha256', 'status'],
+  albums: ['short', 'title', 'description', 'owner_hash'],
+  album_files: ['album_short', 'file_name'],
+  messages: ['name', 'email', 'body'],
+  upload_jobs: ['job_id', 'node_id', 'file_name', 'original_name', 'status', 'last_error'],
+  discord_bots: ['bot_id', 'channel_id', 'health'],
+  nodes: ['node_id', 'hostname', 'web_url', 'status'],
+  upload_journal: ['job_id', 'file_name', 'stage', 'error'],
+};
+const ADMIN_ORDER = {
+  users: 'id', sessions: 'expires_at', files: 'uploaded_at', albums: 'created_at',
+  album_files: 'album_short', messages: 'created_at', upload_jobs: 'created_at',
+  discord_bots: 'bot_id', nodes: 'node_id', upload_journal: 'id',
+};
+
+function adminTableExists(table) {
+  try { getDb().prepare(`SELECT 1 FROM ${table} LIMIT 1`).get(); return true; }
+  catch { return false; }
+}
+
+function adminWhere(table, options = {}) {
+  const clauses = [];
+  const params = [];
+  const search = String(options.q || '').replace(/[*%_]/g, '').slice(0, 120);
+  const columns = ADMIN_SEARCH[table] || [];
+  if (search && columns.length) {
+    clauses.push(`(${columns.map(col => `CAST(${col} AS TEXT) LIKE ?`).join(' OR ')})`);
+    columns.forEach(() => params.push(`%${search}%`));
+  }
+  const where = options.where && typeof options.where === 'object' ? options.where : {};
+  for (const [key, value] of Object.entries(where)) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(key)) continue;
+    if (value === undefined || value === null) clauses.push(`${key} IS NULL`);
+    else { clauses.push(`${key} = ?`); params.push(value); }
+  }
+  return { sql: clauses.join(' AND '), params };
+}
+
+function adminQuery(table, options = {}) {
+  if (!ADMIN_TABLES.has(table)) throw new Error('Unsupported admin table');
+  if (!adminTableExists(table)) return [];
+  const limit = Math.min(Math.max(parseInt(options.limit, 10) || 50, 1), 200);
+  const offset = Math.max(parseInt(options.offset, 10) || 0, 0);
+  const where = adminWhere(table, options);
+  const orderCol = ADMIN_ORDER[table] || 'id';
+  const direction = options.desc === false ? 'ASC' : 'DESC';
+  const sql = `SELECT * FROM ${table}${where.sql ? ` WHERE ${where.sql}` : ''} ORDER BY ${orderCol} ${direction} LIMIT ? OFFSET ?`;
+  return getDb().prepare(sql).all(...where.params, limit, offset);
+}
+
+function adminCount(table, options = {}) {
+  if (!ADMIN_TABLES.has(table)) throw new Error('Unsupported admin table');
+  if (!adminTableExists(table)) return 0;
+  const where = adminWhere(table, options);
+  const sql = `SELECT COUNT(*) AS total FROM ${table}${where.sql ? ` WHERE ${where.sql}` : ''}`;
+  return Number(getDb().prepare(sql).get(...where.params).total);
+}
+
+function adminDelete(table, key, value) {
+  if (!ADMIN_TABLES.has(table) || !/^[a-z_][a-z0-9_]*$/.test(key)) throw new Error('Invalid admin target');
+  if (!adminTableExists(table)) return false;
+  const result = getDb().prepare(`DELETE FROM ${table} WHERE ${key} = ?`).run(value);
+  return result.changes > 0;
+}
+
+function adminUpdate(table, key, value, patch) {
+  if (!ADMIN_TABLES.has(table) || !/^[a-z_][a-z0-9_]*$/.test(key)) throw new Error('Invalid admin target');
+  const entries = Object.entries(patch || {});
+  if (!entries.length) return false;
+  for (const [field] of entries) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(field)) throw new Error('Invalid admin field');
+  }
+  const set = entries.map(([field]) => `${field} = ?`).join(', ');
+  const result = getDb().prepare(`UPDATE ${table} SET ${set} WHERE ${key} = ?`)
+    .run(...entries.map(([, fieldValue]) => fieldValue), value);
+  return result.changes > 0;
+}
+
 module.exports = {
   getDb, closeDb,
   createUser, findUserByName, findUserByEmail, findUserByHash, findUserById, setPassword,
@@ -530,4 +621,5 @@ module.exports = {
   createJob, getJob, claimJob, finishJob, failJob, staleJobs, requeueJob, activeStagedPaths,
   upsertNode, getNode, listNodes,
   addJournal, unresolvedJournal, resolveJournal, journalStats,
+  adminQuery, adminCount, adminDelete, adminUpdate,
 };

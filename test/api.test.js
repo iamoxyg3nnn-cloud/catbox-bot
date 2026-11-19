@@ -35,7 +35,7 @@ async function waitForServer() {
 test.before(async () => {
   server = spawn(process.execPath, ['server.js'], {
     cwd: PROJECT,
-    env: { ...process.env, PORT: String(PORT), DATA_DIR, DISCORD_TRANSPORT: 'mock', NODE_UPLOAD_SECRET: 'test-secret' },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR, DISCORD_TRANSPORT: 'mock', NODE_UPLOAD_SECRET: 'test-secret', ADMIN_TOKEN: 'test-admin-token' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stderr.on('data', chunk => process.stderr.write(chunk));
@@ -91,7 +91,7 @@ test('ops dashboard is served as a standalone page', async () => {
 test('browser pages serve the restored interface', async () => {
   const routes = ['/', '/faq.php', '/tools.php', '/legal.php', '/contact.php', '/credits.php',
     '/litterbox.php', '/nofun.php', '/user/login.php', '/user/register.php',
-    '/user/forgotpassword.php', '/user/index.php', '/user/albums.php'];
+    '/user/forgotpassword.php', '/user/index.php', '/user/albums.php', '/admin'];
   for (const route of routes) {
     const res = await fetch(BASE + route);
     assert.equal(res.status, 200, `${route} should serve the browser UI`);
@@ -533,4 +533,90 @@ test('litterbox rejects an unknown expiry', async () => {
   form.append('fileToUpload', new Blob(['x'], { type: 'text/plain' }), 'temp.txt');
   const res = await fetch(`${BASE}/litterbox/api.php`, { method: 'POST', body: form });
   assert.equal(res.status, 400);
+});
+
+/* ---------------------------- admin console ---------------------------- */
+
+let adminCookie;
+
+async function adminPost(path, body) {
+  return fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    body: JSON.stringify(body),
+  });
+}
+
+test('admin console is protected by a signed session cookie', async () => {
+  const page = await fetch(`${BASE}/admin`);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Control room/);
+
+  const status = await fetch(`${BASE}/api/admin/status`).then(response => response.json());
+  assert.equal(status.enabled, true);
+  assert.equal(status.authenticated, false);
+
+  const denied = await fetch(`${BASE}/api/admin/overview`);
+  assert.equal(denied.status, 401);
+
+  const wrong = await adminPost('/api/admin/login', { token: 'wrong' });
+  assert.equal(wrong.status, 401);
+
+  const login = await adminPost('/api/admin/login', { token: 'test-admin-token' });
+  assert.equal(login.status, 200);
+  adminCookie = login.headers.getSetCookie()
+    .find(cookie => cookie.startsWith('catadmin='))
+    .split(';')[0];
+  assert.ok(adminCookie.length > 'catadmin='.length);
+
+  const authenticated = await fetch(`${BASE}/api/admin/status`, { headers: { cookie: adminCookie } }).then(response => response.json());
+  assert.equal(authenticated.authenticated, true);
+});
+
+test('admin overview and table listings expose metadata without password hashes', async () => {
+  const overview = await fetch(`${BASE}/api/admin/overview`, { headers: { cookie: adminCookie } }).then(response => response.json());
+  assert.equal(overview.ok, true);
+  assert.equal(typeof overview.counts.files, 'number');
+  assert.equal(overview.storage, 'mock');
+
+  const users = await fetch(`${BASE}/api/admin/tables/users`, { headers: { cookie: adminCookie } }).then(response => response.json());
+  assert.ok(Array.isArray(users.rows));
+  for (const row of users.rows) assert.equal(row.password_hash, undefined);
+});
+
+test('admin file delete purges stored bytes and metadata', async () => {
+  const up = await uploadFile([['reqtype', 'fileupload']], 'admin-delete.txt', 'remove me');
+  assert.equal(up.status, 200, up.text);
+  const path = new URL(up.text.trim()).pathname;
+  const name = path.split('/').pop();
+  assert.equal((await fetch(`${BASE}${path}`)).status, 200);
+
+  const del = await fetch(`${BASE}/api/admin/files/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    body: JSON.stringify({ names: [name] }),
+  }).then(response => response.json());
+  assert.deepEqual(del.failed, []);
+  assert.ok(del.deleted.includes(name));
+  assert.equal((await fetch(`${BASE}${path}`)).status, 404);
+});
+
+test('admin runtime switch can pause and resume uploads', async () => {
+  const paused = await fetch(`${BASE}/api/admin/runtime`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    body: JSON.stringify({ uploadsPaused: true }),
+  }).then(response => response.json());
+  assert.equal(paused.uploadsPaused, true);
+
+  const blocked = await uploadFile([['reqtype', 'fileupload']], 'paused.txt', 'nope');
+  assert.equal(blocked.status, 503);
+
+  await fetch(`${BASE}/api/admin/runtime`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    body: JSON.stringify({ uploadsPaused: false }),
+  });
+  const resumed = await uploadFile([['reqtype', 'fileupload']], 'resumed.txt', 'ok');
+  assert.equal(resumed.status, 200);
 });

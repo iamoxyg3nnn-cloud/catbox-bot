@@ -19,6 +19,9 @@ const db = require('./src/dbAdapter');
 const util = require('./src/util');
 const api = require('./src/api');
 const auth = require('./src/auth');
+const adminAuth = require('./src/adminAuth');
+const runtimeFlags = require('./src/runtimeFlags');
+const adminApi = require('./src/adminApi');
 const metadataMirror = require('./src/metadataMirror');
 
 const app = express();
@@ -94,6 +97,16 @@ function safeUpload(req, res, next) {
 }
 
 app.use(auth.sessionMiddleware);
+app.use(adminAuth.middleware);
+
+// Operator-controlled maintenance switch. Only upload writes are paused;
+// downloads, account pages and the admin console itself keep working.
+app.use(['/user/api.php', '/litterbox/api.php', '/api/uploads'], (req, res, next) => {
+  if (req.method !== 'GET' && runtimeFlags.get().uploadsPaused) {
+    return res.status(503).type('text/plain; charset=utf-8').send('Uploads are temporarily paused for maintenance.');
+  }
+  next();
+});
 
 // Short, resumable browser uploads. The signed token is a capability: each
 // chunk and the final commit are independently authenticated and short-lived.
@@ -103,6 +116,10 @@ uploadSessions.register(app, {
 
 // Browser experience and static assets.
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Operator console and its API. Registered before the generic catch-all so
+// /admin resolves to the console instead of the public SPA shell.
+adminApi.register(app);
 
 /* ------------------------------- API ---------------------------------- */
 

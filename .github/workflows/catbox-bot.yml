@@ -202,6 +202,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           MAX_FILE_SIZE: 20mb
           TRUST_PROXY: 1

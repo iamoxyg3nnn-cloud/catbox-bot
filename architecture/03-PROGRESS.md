@@ -161,6 +161,15 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - The upstream Supabase workflow currently ends its session with "Next run: managed by Cloudflare Worker (node-watchman)", but no such watcher exists in this workspace. When that session ends, both tunnels return 530 and the bot cannot start. Until an external watcher exists, Supabase must be restarted manually via its `workflow_dispatch` before the bot.
 - Login bounce fix: the hybrid CDN steering probed both edges on every page load and applied latency/failover redirects to account pages too. Cookies are scoped to one origin, so a signed-in user on the Cloudflare edge could be `location.replace()`d to the Vercel edge mid-login; `/api/dashboard` then answered 401 and `app.js` sent them back to the sign-in form. Auto-steering is now limited to anonymous visits to `/`, and the home nav shows "My files / Albums" once the `userhash` cookie is present.
 
+## Admin console
+- Added a dedicated operator surface at `GET /admin`, served from the API origin. Vercel redirects its own `/admin` and `/admin.html` to that origin so the admin cookie stays same-origin; the regular CDN steering script is deliberately not loaded on the console.
+- Auth is a single high-entropy `ADMIN_TOKEN` env/GitHub secret exchanged for a 12-hour HMAC-signed `catadmin` HttpOnly + SameSite=Strict + Secure cookie. Online guessing is throttled per IP; the token itself is never persisted in the browser.
+- `src/adminApi.js` implements a whitelisted table API over all ten metadata tables. Both adapters gained `adminQuery/adminCount/adminDelete/adminUpdate` with fixed table, search-column, key and field allow-lists; password hashes are stripped from user rows.
+- Moderation actions: file delete (Discord message first, then metadata row, with failed purges left in place for the hourly sweep), account delete (all owned files, albums, sessions, then user), album/message/journal deletion, safe field edits, job requeue/fail, journal reconciliation, node drain toggles and Discord bot enable/health toggles.
+- Operations actions: live overview counters, Supabase/edge/bot health probes, runtime config viewer and an in-memory `uploadsPaused` maintenance switch that blocks only upload writes.
+- Admin UI is a dependency-free dense dashboard in `public/admin.html` with keyboard-accessible search, pagination, native confirm/edit dialogs, focus return and `aria-live` status toasts.
+- Tests: 57/57 passing, including admin auth gating, hidden password hashes, byte-purging file deletion and the maintenance switch. Supabase adapter read checks passed on all live tables. `ADMIN_TOKEN` was generated locally and set as a GitHub Actions secret; it is not committed.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `data/tmp` and `D:\catbox_staging` are transient.

@@ -89,3 +89,4 @@ This file is the authoritative "what remains to be built" list. Update `03-PROGR
 - [x] 429/retry counters in the Discord transport + `discord.*` metrics; staged
   bytes/files reported by node heartbeats and aggregated as `staging.*`.
 - [x] `/ops` dependency-free dashboard charts the 429 rate and staged disk usage.
+- [x] `/admin` operator console with authenticated table browsing, moderation, queue/job controls, bot/node controls, health probes and an upload maintenance switch.

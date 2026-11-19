@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0b1020">
+  <title>Control room · MewPocket</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mewpocket.svg?v=2">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a30;
+      --panel-2: #17213c;
+      --line: #26345a;
+      --text: #e8edf8;
+      --muted: #9aa8c7;
+      --accent: #7aa2ff;
+      --good: #46d39a;
+      --warn: #f2c14e;
+      --bad: #ff6b7a;
+      --radius: 12px;
+      --shadow: 0 18px 40px rgba(0, 0, 0, .28);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(1200px 600px at 80% -10%, #1b2c55 0%, transparent 60%), var(--bg);
+      color: var(--text);
+      font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    a { color: var(--accent); }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .skip-link {
+      position: absolute; left: -999px; top: 0; z-index: 20;
+      background: var(--accent); color: #08101f; padding: 8px 12px; border-radius: 0 0 8px 0;
+    }
+    .skip-link:focus { left: 0; }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 14px 22px; border-bottom: 1px solid var(--line);
+      background: rgba(11, 16, 32, .88); backdrop-filter: blur(10px);
+      position: sticky; top: 0; z-index: 10;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
+      background: linear-gradient(140deg, #7aa2ff, #b28bff); color: #08101f; font-weight: 800;
+    }
+    .brand strong { font-size: 16px; letter-spacing: .01em; }
+    .brand span { color: var(--muted); font-size: 12px; }
+    .top-actions { display: flex; align-items: center; gap: 10px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px;
+      border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+      color: var(--muted); font-size: 12px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.good { background: var(--good); }
+    .dot.bad { background: var(--bad); }
+    .dot.warn { background: var(--warn); }
+    .btn {
+      border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+      padding: 8px 12px; border-radius: 8px; font-weight: 600;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #08101f; }
+    .btn.danger { border-color: rgba(255,107,122,.5); color: #ffc2c9; }
+    .btn.small { padding: 5px 9px; font-size: 12px; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: calc(100vh - 62px); }
+    .sidebar { border-right: 1px solid var(--line); padding: 18px 12px; background: rgba(18, 26, 48, .45); }
+    .sidebar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 0 10px 10px; }
+    .nav { display: grid; gap: 3px; }
+    .nav button {
+      text-align: left; border: 0; background: transparent; color: var(--muted);
+      padding: 9px 11px; border-radius: 8px; font-weight: 600;
+    }
+    .nav button:hover { background: var(--panel-2); color: var(--text); }
+    .nav button[aria-current="page"] { background: var(--panel-2); color: #fff; box-shadow: inset 3px 0 var(--accent); }
+    main { padding: 24px; min-width: 0; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .lede { color: var(--muted); margin: 0 0 20px; }
+    section[hidden], .view[hidden] { display: none !important; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 12px; margin: 0 0 18px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+    .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    .card .value { font-size: 26px; font-weight: 750; margin-top: 4px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 18px; }
+    .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+    .panel-head h3 { margin: 0; font-size: 15px; }
+    .panel-body { padding: 16px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .toolbar input[type="search"] {
+      background: var(--bg); border: 1px solid var(--line); color: var(--text);
+      padding: 8px 10px; border-radius: 8px; min-width: 220px;
+    }
+    .table-wrap { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+    td.actions { white-space: nowrap; }
+    td.actions .btn { margin-right: 5px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    .truncate { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid var(--line); }
+    .tag.ready, .tag.up, .tag.healthy, .tag.true { color: var(--good); border-color: rgba(70,211,154,.4); }
+    .tag.failed, .tag.dead, .tag.down, .tag.unhealthy, .tag.false { color: var(--bad); border-color: rgba(255,107,122,.4); }
+    .tag.queued, .tag.uploading, .tag.draining, .tag.unknown { color: var(--warn); border-color: rgba(242,193,78,.4); }
+    .empty { color: var(--muted); padding: 20px; text-align: center; }
+    .pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; color: var(--muted); }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+    .kv { display: grid; grid-template-columns: minmax(140px, 1fr) 2fr; gap: 7px 14px; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; word-break: break-word; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; color: var(--muted); font-size: 12px; }
+    .login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+    .login-card { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 28px; }
+    .login-card h1 { font-size: 24px; }
+    .login-card p { color: var(--muted); }
+    label { display: block; font-weight: 600; margin: 14px 0 6px; }
+    input[type="password"], input[type="text"], input[type="number"], select {
+      width: 100%; background: var(--bg); border: 1px solid var(--line);
+      color: var(--text); padding: 9px 10px; border-radius: 8px;
+    }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .error { color: #ffc2c9; min-height: 20px; margin-top: 10px; }
+    dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 0; box-shadow: var(--shadow); max-width: min(520px, 92vw); width: 100%; }
+    dialog::backdrop { background: rgba(4, 8, 18, .7); backdrop-filter: blur(3px); }
+    .dialog-head, .dialog-foot { padding: 14px 18px; border-bottom: 1px solid var(--line); }
+    .dialog-head h3 { margin: 0; }
+    .dialog-body { padding: 18px; }
+    .dialog-foot { border-bottom: 0; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; }
+    .field-row { margin-bottom: 12px; }
+    .field-row label { margin-top: 0; }
+    .check-row { display: flex; gap: 8px; align-items: center; }
+    .check-row input { width: auto; }
+    #toast {
+      position: fixed; right: 18px; bottom: 18px; z-index: 30; max-width: 360px;
+      background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+      padding: 11px 14px; box-shadow: var(--shadow); display: none;
+    }
+    #toast.show { display: block; }
+    #toast.ok { border-color: rgba(70,211,154,.6); }
+    #toast.err { border-color: rgba(255,107,122,.6); }
+    footer { padding: 14px 24px 28px; color: var(--muted); font-size: 12px; }
+    @media (max-width: 780px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+      .nav { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+      main { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <div id="loginView" class="login-wrap">
+    <form id="loginForm" class="login-card" novalidate>
+      <h1>Control room</h1>
+      <p>Operator access to MewPocket. Your token is exchanged for a short-lived, HttpOnly session cookie.</p>
+      <label for="adminToken">Admin token</label>
+      <input id="adminToken" name="token" type="password" autocomplete="current-password" required>
+      <p class="hint">Set <code>ADMIN_TOKEN</code> in the bot environment / GitHub Secrets. Nothing is stored in the browser.</p>
+      <p id="loginError" class="error" role="alert"></p>
+      <button class="btn primary" type="submit">Sign in to console</button>
+    </form>
+  </div>
+
+  <div id="appView" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <div><strong>MewPocket control room</strong><br><span>Operations &amp; moderation</span></div>
+      </div>
+      <div class="top-actions">
+        <span class="pill"><span id="statusDot" class="dot"></span><span id="statusText">Checking…</span></span>
+        <button id="refreshBtn" class="btn small" type="button">Refresh</button>
+        <button id="logoutBtn" class="btn small" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <h2>Control</h2>
+        <nav id="nav" class="nav" aria-label="Admin sections">
+          <button type="button" data-tab="overview" aria-current="page">Overview</button>
+          <button type="button" data-tab="files">Files</button>
+          <button type="button" data-tab="users">Users</button>
+          <button type="button" data-tab="albums">Albums</button>
+          <button type="button" data-tab="messages">Messages</button>
+          <button type="button" data-tab="upload_jobs">Upload queue</button>
+          <button type="button" data-tab="nodes">Nodes</button>
+          <button type="button" data-tab="discord_bots">Discord bots</button>
+          <button type="button" data-tab="upload_journal">Journal</button>
+          <button type="button" data-tab="settings">Settings</button>
+        </nav>
+      </aside>
+
+      <main id="main">
+        <h1 id="viewTitle">Overview</h1>
+        <p id="viewLede" class="lede">Live state of the control plane.</p>
+
+        <div id="view-overview" class="view"></div>
+
+        <div id="view-table" class="view" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h3 id="tableTitle">Records</h3>
+              <div class="toolbar">
+                <label class="skip-link" for="tableSearch">Search records</label>
+                <input id="tableSearch" type="search" placeholder="Search records…">
+                <button id="globalAction" class="btn small" type="button" hidden></button>
+              </div>
+            </div>
+            <div class="table-wrap"><table><thead id="tableHead"></thead><tbody id="tableBody"></tbody></table></div>
+            <div class="pager">
+              <button id="prevPage" class="btn small" type="button">Previous</button>
+              <span id="pageInfo">—</span>
+              <button id="nextPage" class="btn small" type="button">Next</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="view-settings" class="view" hidden>
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-head"><h3>Runtime switches</h3></div>
+              <div class="panel-body">
+                <div class="field-row check-row">
+                  <input id="pauseUploads" type="checkbox">
+                  <label for="pauseUploads">Pause all uploads for maintenance</label>
+                </div>
+                <p class="hint">Process-local and immediate. Downloads, accounts and this console stay available.</p>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h3>Service health</h3><button id="healthBtn" class="btn small" type="button">Run checks</button></div>
+              <div class="panel-body"><dl id="healthList" class="kv"><dt>Status</dt><dd>Not checked yet.</dd></dl></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Runtime configuration</h3></div>
+            <div class="panel-body"><pre id="configDump">Loading…</pre></div>
+          </div>
+        </div>
+      </main>
+    </div>
+    <footer>Operator actions are logged by the server. File deletion removes the Discord message before its metadata row.</footer>
+  </div>
+
+  <dialog id="confirmDialog" aria-labelledby="confirmTitle">
+    <div class="dialog-head"><h3 id="confirmTitle">Confirm action</h3></div>
+    <div class="dialog-body"><p id="confirmMessage"></p></div>
+    <div class="dialog-foot">
+      <button id="confirmCancel" class="btn" type="button">Cancel</button>
+      <button id="confirmOk" class="btn danger" type="button">Confirm</button>
+    </div>
+  </dialog>
+
+  <dialog id="editDialog" aria-labelledby="editTitle">
+    <form id="editForm">
+      <div class="dialog-head"><h3 id="editTitle">Edit record</h3></div>
+      <div class="dialog-body"><div id="editFields"></div><p id="editError" class="error" role="alert"></p></div>
+      <div class="dialog-foot">
+        <button id="editCancel" class="btn" type="button">Cancel</button>
+        <button class="btn primary" type="submit">Save changes</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+  (() => {
+    'use strict';
+
+    const $ = id => document.getElementById(id);
+    const PAGE_SIZE = 50;
+    const TABLES = {
+      files: {
+        title: 'Files', lede: 'Every stored object. Deletes purge Discord bytes first.',
+        key: 'name',
+        columns: [
+          ['name', 'Name', v => `<a href="/files/${encodeURIComponent(v)}" target="_blank" rel="noopener">${esc(v)}</a>`],
+          ['original_name', 'Original', v => esc(v || '—')],
+          ['size', 'Size', v => human(Number(v) || 0)],
+          ['owner_hash', 'Owner', v => `<span class="mono truncate" title="${esc(v || '')}">${esc(v ? String(v).slice(0, 10) : '—')}</span>`],
+          ['status', 'Status', v => tag(v)],
+          ['uploaded_at', 'Uploaded', v => date(v)],
+        ],
+        actions: [
+          { label: 'Edit', kind: 'edit' },
+          { label: 'Delete', kind: 'delete', danger: true },
+        ],
+      },
+      users: {
+        title: 'Users', lede: 'Accounts and their storage. Deleting a user purges every file they own.',
+        key: 'id',
+        columns: [
+          ['id', 'ID', v => esc(v)],
+          ['username', 'Username', v => esc(v)],
+          ['email', 'Email', v => esc(v)],
+          ['userhash', 'User hash', v => `<span class="mono truncate" title="${esc(v || '')}">${esc(v || '')}</span>`],
+          ['created_at', 'Joined', v => date(v)],
+        ],
+        actions: [{ label: 'Delete account', kind: 'deleteUser', danger: true }],
+      },
+      albums: {
+        title: 'Albums', lede: 'Shared collections. Deleting an album removes its file links.',
+        key: 'short',
+        columns: [
+          ['short', 'Short', v => `<a href="/a/${encodeURIComponent(v)}" target="_blank" rel="noopener">${esc(v)}</a>`],
+          ['title', 'Title', v => esc(v)],
+          ['owner_hash', 'Owner', v => `<span class="mono">${esc(v ? String(v).slice(0, 10) : '—')}</span>`],
+          ['created_at', 'Created', v => date(v)],
+        ],
+        actions: [{ label: 'Delete', kind: 'delete', danger: true }],
+      },
+      messages: {
+        title: 'Messages', lede: 'Contact form inbox.',
+        key: 'id',
+        columns: [
+          ['id', 'ID', v => esc(v)],
+          ['name', 'Name', v => esc(v)],
+          ['email', 'Email', v => esc(v || '—') ],
+          ['body', 'Message', v => `<span class="truncate" title="${esc(v || '')}">${esc(v || '')}</span>`],
+          ['created_at', 'Received', v => date(v)],
+        ],
+        actions: [{ label: 'Delete', kind: 'delete', danger: true }],
+      },
+      upload_jobs: {
+        title: 'Upload queue', lede: 'In-flight and finished upload work. Requeue retries a stuck job.',
+        key: 'job_id',
+        columns: [
+          ['job_id', 'Job', v => `<span class="mono">${esc(v)}</span>`],
+          ['status', 'Status', v => tag(v)],
+          ['original_name', 'File', v => esc(v || '—')],
+          ['node_id', 'Node', v => esc(v || '—')],
+          ['attempts', 'Attempts', v => esc(v)],
+          ['last_error', 'Error', v => `<span class="truncate" title="${esc(v || '')}">${esc(v || '—')}</span>`],
+          ['created_at', 'Created', v => date(v)],
+        ],
+        actions: [
+          { label: 'Edit', kind: 'edit' },
+          { label: 'Requeue', kind: 'requeue' },
+          { label: 'Fail', kind: 'fail', danger: true },
+        ],
+      },
+      nodes: {
+        title: 'Nodes', lede: 'Worker fleet health and maintenance draining.',
+        key: 'node_id',
+        columns: [
+          ['node_id', 'Node', v => `<span class="mono">${esc(v)}</span>`],
+          ['status', 'Status', v => tag(v)],
+          ['pending', 'Pending', v => esc(v)],
+          ['active', 'Active', v => esc(v)],
+          ['draining', 'Draining', v => tag(Boolean(v))],
+          ['staged_bytes', 'Staged', v => human(Number(v) || 0)],
+          ['last_heartbeat', 'Heartbeat', v => date(v)],
+        ],
+        actions: [{ label: 'Edit', kind: 'edit' }],
+      },
+      discord_bots: {
+        title: 'Discord bots', lede: 'Byte-storage bots. Disabled bots are skipped for new uploads.',
+        key: 'bot_id',
+        columns: [
+          ['bot_id', 'Bot ID', v => `<span class="mono">${esc(v)}</span>`],
+          ['channel_id', 'Channel', v => `<span class="mono">${esc(v)}</span>`],
+          ['health', 'Health', v => tag(v)],
+          ['enabled', 'Enabled', v => tag(Boolean(v))],
+          ['last_used_at', 'Last used', v => date(v)],
+        ],
+        actions: [{ label: 'Edit', kind: 'edit' }],
+      },
+      upload_journal: {
+        title: 'Orphan journal', lede: 'Discord writes whose metadata failed. Reconcile replays them safely.',
+        key: 'id',
+        columns: [
+          ['id', 'ID', v => esc(v)],
+          ['job_id', 'Job', v => `<span class="mono">${esc(v)}</span>`],
+          ['file_name', 'File', v => esc(v || '—')],
+          ['stage', 'Stage', v => esc(v)],
+          ['error', 'Error', v => `<span class="truncate" title="${esc(v || '')}">${esc(v || '—')}</span>`],
+          ['resolved', 'Resolved', v => tag(Boolean(v))],
+          ['created_at', 'Created', v => date(v)],
+        ],
+        actions: [
+          { label: 'Edit', kind: 'edit' },
+          { label: 'Resolve', kind: 'resolve' },
+        ],
+      },
+    };
+
+    let currentTab = 'overview';
+    const state = {};
+    for (const key of Object.keys(TABLES)) state[key] = { q: '', offset: 0, total: 0, rows: [], editable: [] };
+
+    let lastTrigger = null;
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+    function human(bytes) {
+      if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+      const units = ['B', 'KiB', 'MiB', 'GiB'];
+      const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+      return `${(bytes / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
+    }
+    function date(value) {
+      const n = Number(value);
+      return n ? new Date(n).toLocaleString() : '—';
+    }
+    function tag(value) {
+      const text = String(value);
+      return `<span class="tag ${esc(text.toLowerCase())}">${esc(text)}</span>`;
+    }
+    function toast(message, kind = 'ok') {
+      const el = $('toast');
+      el.textContent = message;
+      el.className = `show ${kind}`;
+      window.clearTimeout(toast.timer);
+      toast.timer = window.setTimeout(() => { el.className = ''; }, 4200);
+    }
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      });
+      const text = await response.text();
+      let data;
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text }; }
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
+    }
+
+    function confirmAction(message, trigger) {
+      lastTrigger = trigger || document.activeElement;
+      $('confirmMessage').textContent = message;
+      const dialog = $('confirmDialog');
+      dialog.showModal();
+      $('confirmOk').focus();
+      return new Promise(resolve => {
+        const done = result => {
+          dialog.close();
+          resolve(result);
+          if (lastTrigger && typeof lastTrigger.focus === 'function') lastTrigger.focus();
+        };
+        $('confirmOk').onclick = () => done(true);
+        $('confirmCancel').onclick = () => done(false);
+        dialog.addEventListener('cancel', event => { event.preventDefault(); done(false); }, { once: true });
+      });
+    }
+
+    function openEdit(table, row, trigger) {
+      const editable = state[table].editable || [];
+      if (!editable.length) return toast('This record has no editable fields.', 'err');
+      lastTrigger = trigger || document.activeElement;
+      $('editFields').innerHTML = '';
+      $('editError').textContent = '';
+      for (const field of editable) {
+        const value = row[field];
+        const wrap = document.createElement('div');
+        wrap.className = 'field-row';
+        const label = document.createElement('label');
+        label.textContent = field.replace(/_/g, ' ');
+        label.htmlFor = `edit-${field}`;
+        let input;
+        if (typeof value === 'boolean' || ['enabled', 'draining', 'resolved'].includes(field)) {
+          input = document.createElement('input');
+          input.type = 'checkbox';
+          input.checked = Boolean(value);
+          wrap.className = 'field-row check-row';
+        } else if (typeof value === 'number' || field === 'attempts') {
+          input = document.createElement('input');
+          input.type = 'number';
+          input.value = value ?? '';
+        } else {
+          input = document.createElement('input');
+          input.type = 'text';
+          input.value = value ?? '';
+        }
+        input.id = `edit-${field}`;
+        input.dataset.field = field;
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+        $('editFields').appendChild(wrap);
+      }
+      $('editDialog').dataset.table = table;
+      $('editDialog').dataset.value = row[TABLES[table].key];
+      $('editDialog').showModal();
+      $('editFields').querySelector('input').focus();
+    }
+
+    function readEditForm() {
+      const out = {};
+      for (const input of $('editFields').querySelectorAll('input')) {
+        out[input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value;
+      }
+      return out;
+    }
+
+    async function showTab(tab) {
+      currentTab = tab;
+      for (const button of $('nav').querySelectorAll('button')) {
+        if (button.dataset.tab === tab) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
+      }
+      const isSettings = tab === 'settings';
+      const isTable = Boolean(TABLES[tab]);
+      $('view-overview').hidden = tab !== 'overview';
+      $('view-settings').hidden = !isSettings;
+      $('view-table').hidden = !isTable;
+
+      if (tab === 'overview') {
+        $('viewTitle').textContent = 'Overview';
+        $('viewLede').textContent = 'Live state of the control plane.';
+        await loadOverview();
+      } else if (isSettings) {
+        $('viewTitle').textContent = 'Settings';
+        $('viewLede').textContent = 'Operational switches and service diagnostics.';
+        await loadSettings();
+      } else {
+        const cfg = TABLES[tab];
+        $('viewTitle').textContent = cfg.title;
+        $('viewLede').textContent = cfg.lede;
+        $('tableTitle').textContent = cfg.title;
+        await loadTable(tab);
+      }
+    }
+
+    async function loadOverview() {
+      try {
+        const data = await api('/api/admin/overview');
+        const cards = Object.entries(data.counts || {}).map(([name, count]) =>
+          `<div class="card"><div class="label">${esc(name)}</div><div class="value">${count === null ? '—' : esc(count)}</div></div>`).join('');
+        const pause = data.runtime && data.runtime.uploadsPaused;
+        $('view-overview').innerHTML = `
+          <div class="cards">
+            <div class="card"><div class="label">Backend</div><div class="value" style="font-size:18px">${esc(data.backend)}</div></div>
+            <div class="card"><div class="label">Byte store</div><div class="value" style="font-size:18px">${esc(data.storage)}</div></div>
+            <div class="card"><div class="label">Uploads</div><div class="value" style="font-size:18px">${pause ? 'PAUSED' : 'Open'}</div></div>
+            <div class="card"><div class="label">429 rate</div><div class="value">${data.discord ? esc((data.discord.rateLimitPct || 0) + '%') : '—'}</div></div>
+            <div class="card"><div class="label">Journal backlog</div><div class="value">${data.journal ? esc(data.journal.unresolved) : '—'}</div></div>
+          </div>
+          <div class="cards">${cards}</div>
+          <div class="panel">
+            <div class="panel-head"><h3>Quick actions</h3></div>
+            <div class="panel-body toolbar">
+              <button class="btn" type="button" data-quick="health">Run health checks</button>
+              <button class="btn" type="button" data-quick="reconcile">Reconcile orphan journal</button>
+              <button class="btn" type="button" data-quick="pause">${pause ? 'Resume uploads' : 'Pause uploads'}</button>
+              <button class="btn" type="button" data-quick="files">Manage files</button>
+            </div>
+          </div>`;
+        $('view-overview').querySelectorAll('[data-quick]').forEach(button => {
+          button.addEventListener('click', async event => {
+            const action = event.currentTarget.dataset.quick;
+            if (action === 'files') return showTab('files');
+            if (action === 'health') return checkHealth();
+            if (action === 'pause') {
+              const next = !pause;
+              await api('/api/admin/runtime', { method: 'PATCH', body: JSON.stringify({ uploadsPaused: next }) });
+              toast(next ? 'Uploads paused.' : 'Uploads resumed.');
+              return loadOverview();
+            }
+            if (action === 'reconcile') {
+              if (!await confirmAction('Replay all unresolved journal entries now?', event.currentTarget)) return;
+              await api('/api/admin/journal/reconcile', { method: 'POST' });
+              toast('Journal reconciliation complete.');
+              return loadOverview();
+            }
+          });
+        });
+      } catch (err) {
+        $('view-overview').innerHTML = `<div class="panel"><div class="panel-body error">${esc(err.message)}</div></div>`;
+      }
+    }
+
+    async function loadTable(tab, keepSearch = true) {
+      const cfg = TABLES[tab];
+      const s = state[tab];
+      if (!keepSearch) s.offset = 0;
+      const query = new URLSearchParams({ q: s.q, limit: String(PAGE_SIZE), offset: String(s.offset) });
+      try {
+        const data = await api(`/api/admin/tables/${tab}?${query}`);
+        s.rows = data.rows;
+        s.total = data.total;
+        s.editable = data.editable || [];
+        $('tableHead').innerHTML = `<tr>${cfg.columns.map(c => `<th scope="col">${esc(c[1])}</th>`).join('')}<th scope="col">Actions</th></tr>`;
+        $('tableBody').innerHTML = s.rows.length
+          ? s.rows.map(row => `<tr>${cfg.columns.map(c => `<td>${c[2](row[c[0]], row)}</td>`).join('')}<td class="actions">${cfg.actions.map(a =>
+              `<button class="btn small ${a.danger ? 'danger' : ''}" type="button" data-action="${a.kind}" data-key="${esc(row[cfg.key])}">${esc(a.label)}</button>`).join('')}</td></tr>`).join('')
+          : `<tr><td colspan="${cfg.columns.length + 1}" class="empty">No matching records.</td></tr>`;
+        const start = s.total ? s.offset + 1 : 0;
+        const end = Math.min(s.offset + PAGE_SIZE, s.total);
+        $('pageInfo').textContent = `${start}–${end} of ${s.total}`;
+        $('prevPage').disabled = s.offset === 0;
+        $('nextPage').disabled = end >= s.total;
+        $('globalAction').hidden = tab !== 'upload_journal';
+        if (tab === 'upload_journal') {
+          $('globalAction').textContent = 'Reconcile journal';
+        }
+        $('tableBody').querySelectorAll('button[data-action]').forEach(button => {
+          button.addEventListener('click', event => handleAction(tab, event.currentTarget));
+        });
+      } catch (err) {
+        $('tableBody').innerHTML = `<tr><td colspan="${cfg.columns.length + 1}" class="empty error">${esc(err.message)}</td></tr>`;
+      }
+    }
+
+    async function handleAction(tab, button) {
+      const cfg = TABLES[tab];
+      const key = button.dataset.key;
+      const row = state[tab].rows.find(r => String(r[cfg.key]) === key);
+      const action = button.dataset.action;
+      try {
+        if (action === 'edit') return openEdit(tab, row, button);
+        if (action === 'delete') {
+          const label = row.original_name || row.name || row.title || row.id || key;
+          if (!await confirmAction(`Delete ${label}? For files, the Discord message is removed first. This cannot be undone.`, button)) return;
+          await api(`/api/admin/tables/${tab}`, { method: 'DELETE', body: JSON.stringify({ value: key }) });
+          toast('Record deleted.');
+        } else if (action === 'deleteUser') {
+          if (!await confirmAction(`Delete account ${row.username} and purge all files they own? This cannot be undone.`, button)) return;
+          await api('/api/admin/users/delete', { method: 'POST', body: JSON.stringify({ id: row.id }) });
+          toast('Account and owned files removed.');
+        } else if (action === 'requeue') {
+          await api(`/api/admin/jobs/${encodeURIComponent(key)}/requeue`, { method: 'POST' });
+          toast('Job requeued.');
+        } else if (action === 'fail') {
+          if (!await confirmAction(`Mark job ${key} as failed?`, button)) return;
+          await api(`/api/admin/jobs/${encodeURIComponent(key)}/fail`, { method: 'POST', body: JSON.stringify({ error: 'Marked failed by operator.' }) });
+          toast('Job marked failed.');
+        } else if (action === 'resolve') {
+          await api(`/api/admin/journal/${encodeURIComponent(key)}/resolve`, { method: 'POST' });
+          toast('Journal entry resolved.');
+        }
+        await loadTable(tab);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    }
+
+    async function loadSettings() {
+      try {
+        const [runtime, overview] = await Promise.all([
+          api('/api/admin/runtime'),
+          api('/api/admin/overview'),
+        ]);
+        $('pauseUploads').checked = Boolean(runtime.uploadsPaused);
+        $('configDump').textContent = JSON.stringify(overview.config || {}, null, 2);
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    }
+
+    async function checkHealth() {
+      try {
+        const data = await api('/api/admin/health');
+        const line = (name, value) => `<dt>${esc(name)}</dt><dd>${value.ok ? 'OK' : 'FAIL'} · ${esc(value.status ?? value.error ?? '')} · ${esc(value.ms ?? 0)} ms</dd>`;
+        const bots = (data.bots || []).map(b => `${esc(b.id)}: ${esc(b.health || 'unknown')}`).join(', ') || 'none registered';
+        $('healthList').innerHTML = line('Control plane', data.controlPlane)
+          + line('Supabase metadata', data.supabase)
+          + line('Public edge', data.edge)
+          + `<dt>Storage</dt><dd>${esc(data.storage)}</dd>`
+          + `<dt>Discord bots</dt><dd>${bots}</dd>`;
+        toast('Health checks complete.');
+      } catch (err) {
+        toast(err.message, 'err');
+      }
+    }
+
+    async function enterConsole() {
+      const status = await api('/api/admin/status');
+      if (!status.enabled) {
+        $('loginError').textContent = 'Admin console is not configured. Set ADMIN_TOKEN and restart the bot.';
+        return;
+      }
+      if (!status.authenticated) {
+        $('loginView').hidden = false;
+        $('appView').hidden = true;
+        $('adminToken').focus();
+        return;
+      }
+      $('loginView').hidden = true;
+      $('appView').hidden = false;
+      $('statusDot').className = 'dot good';
+      $('statusText').textContent = 'Operator session active';
+      await showTab(currentTab);
+    }
+
+    $('loginForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      $('loginError').textContent = '';
+      const button = event.target.querySelector('button');
+      button.disabled = true;
+      try {
+        await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ token: $('adminToken').value }) });
+        $('adminToken').value = '';
+        await enterConsole();
+        toast('Signed in.');
+      } catch (err) {
+        $('loginError').textContent = err.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    $('logoutBtn').addEventListener('click', async () => {
+      await api('/api/admin/logout', { method: 'POST' });
+      await enterConsole();
+      toast('Signed out.');
+    });
+
+    $('refreshBtn').addEventListener('click', () => showTab(currentTab));
+    $('nav').addEventListener('click', event => {
+      const button = event.target.closest('button[data-tab]');
+      if (button) showTab(button.dataset.tab);
+    });
+
+    let searchTimer;
+    $('tableSearch').addEventListener('input', event => {
+      window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(() => {
+        state[currentTab].q = event.target.value.trim();
+        state[currentTab].offset = 0;
+        loadTable(currentTab);
+      }, 250);
+    });
+    $('prevPage').addEventListener('click', () => {
+      const s = state[currentTab];
+      s.offset = Math.max(0, s.offset - PAGE_SIZE);
+      loadTable(currentTab);
+    });
+    $('nextPage').addEventListener('click', () => {
+      const s = state[currentTab];
+      if (s.offset + PAGE_SIZE < s.total) s.offset += PAGE_SIZE;
+      loadTable(currentTab);
+    });
+    $('globalAction').addEventListener('click', async event => {
+      if (!await confirmAction('Reconcile all unresolved journal entries now?', event.currentTarget)) return;
+      try {
+        await api('/api/admin/journal/reconcile', { method: 'POST' });
+        toast('Journal reconciliation complete.');
+        loadTable(currentTab);
+      } catch (err) { toast(err.message, 'err'); }
+    });
+
+    $('pauseUploads').addEventListener('change', async event => {
+      try {
+        await api('/api/admin/runtime', { method: 'PATCH', body: JSON.stringify({ uploadsPaused: event.target.checked }) });
+        toast(event.target.checked ? 'Uploads paused.' : 'Uploads resumed.');
+      } catch (err) {
+        event.target.checked = !event.target.checked;
+        toast(err.message, 'err');
+      }
+    });
+    $('healthBtn').addEventListener('click', checkHealth);
+
+    $('editForm').addEventListener('submit', async event => {
+      event.preventDefault();
+      const dialog = $('editDialog');
+      const table = dialog.dataset.table;
+      const value = dialog.dataset.value;
+      $('editError').textContent = '';
+      try {
+        await api(`/api/admin/tables/${table}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ value, patch: readEditForm() }),
+        });
+        dialog.close();
+        toast('Record updated.');
+        if (lastTrigger && typeof lastTrigger.focus === 'function') lastTrigger.focus();
+        loadTable(table);
+      } catch (err) {
+        $('editError').textContent = err.message;
+      }
+    });
+    $('editCancel').addEventListener('click', () => {
+      $('editDialog').close();
+      if (lastTrigger && typeof lastTrigger.focus === 'function') lastTrigger.focus();
+    });
+    $('editDialog').addEventListener('cancel', event => {
+      event.preventDefault();
+      $('editDialog').close();
+      if (lastTrigger && typeof lastTrigger.focus === 'function') lastTrigger.focus();
+    });
+
+    enterConsole().catch(err => {
+      $('loginError').textContent = err.message;
+    });
+  })();
+  </script>
+</body>
+</html>

@@ -381,6 +381,90 @@ async function journalStats() {
   };
 }
 
+/* ---------------- admin (whitelisted generic access) ---------------- */
+
+const ADMIN_TABLES = new Set([
+  'users', 'sessions', 'files', 'albums', 'album_files', 'messages',
+  'upload_jobs', 'discord_bots', 'nodes', 'upload_journal',
+]);
+const ADMIN_SEARCH = {
+  users: ['username', 'email', 'userhash'],
+  sessions: ['token'],
+  files: ['name', 'original_name', 'owner_hash', 'sha256', 'status'],
+  albums: ['short', 'title', 'description', 'owner_hash'],
+  album_files: ['album_short', 'file_name'],
+  messages: ['name', 'email', 'body'],
+  upload_jobs: ['job_id', 'node_id', 'file_name', 'original_name', 'status', 'last_error'],
+  discord_bots: ['bot_id', 'channel_id', 'health'],
+  nodes: ['node_id', 'hostname', 'web_url', 'status'],
+  upload_journal: ['job_id', 'file_name', 'stage', 'error'],
+};
+const ADMIN_ORDER = {
+  users: 'id', sessions: 'expires_at', files: 'uploaded_at', albums: 'created_at',
+  album_files: 'album_short', messages: 'created_at', upload_jobs: 'created_at',
+  discord_bots: 'bot_id', nodes: 'node_id', upload_journal: 'id',
+};
+
+function adminCheck(table) {
+  if (!ADMIN_TABLES.has(table)) throw new Error('Unsupported admin table');
+}
+
+function adminFilter(table, options = {}) {
+  const parts = [];
+  const params = new URLSearchParams();
+  const search = String(options.q || '').replace(/[*%_,]/g, '').slice(0, 120);
+  const columns = ADMIN_SEARCH[table] || [];
+  if (search && columns.length) {
+    parts.push(`(${columns.map(col => `${col}.ilike.*${search}*`).join(',')})`);
+  }
+  const where = options.where && typeof options.where === 'object' ? options.where : {};
+  for (const [key, value] of Object.entries(where)) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(key)) continue;
+    parts.push(value === null || value === undefined ? `${key}.is.null` : `${key}.eq.${value}`);
+  }
+  if (parts.length) params.set('and', parts.join(','));
+  return params;
+}
+
+async function adminCount(table, options = {}) {
+  adminCheck(table);
+  const params = adminFilter(table, options);
+  params.set('select', '*');
+  const rows = await rawSelect(table, params.toString());
+  return rows.length;
+}
+
+async function adminQuery(table, options = {}) {
+  adminCheck(table);
+  const params = adminFilter(table, options);
+  const limit = Math.min(Math.max(parseInt(options.limit, 10) || 50, 1), 200);
+  const offset = Math.max(parseInt(options.offset, 10) || 0, 0);
+  params.set('select', '*');
+  params.set('order', `${ADMIN_ORDER[table] || 'id'}.desc`);
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  return rawSelect(table, params.toString());
+}
+
+async function adminDelete(table, key, value) {
+  adminCheck(table);
+  if (!/^[a-z_][a-z0-9_]*$/.test(key)) throw new Error('Invalid admin target');
+  const rows = await remove(table, { [key]: `eq.${value}` });
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+async function adminUpdate(table, key, value, patchData) {
+  adminCheck(table);
+  if (!/^[a-z_][a-z0-9_]*$/.test(key)) throw new Error('Invalid admin target');
+  const entries = Object.entries(patchData || {});
+  if (!entries.length) return null;
+  for (const [field] of entries) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(field)) throw new Error('Invalid admin field');
+  }
+  const rows = await patch(table, { [key]: `eq.${value}` }, Object.fromEntries(entries));
+  return Array.isArray(rows) && rows.length > 0;
+}
+
 module.exports = {
   getDb: () => null,
   closeDb: async () => {},
@@ -394,4 +478,5 @@ module.exports = {
   createJob, getJob, claimJob, finishJob, failJob, staleJobs, requeueJob, activeStagedPaths,
   upsertNode, getNode, listNodes,
   addJournal, unresolvedJournal, resolveJournal, journalStats,
+  adminQuery, adminCount, adminDelete, adminUpdate,
 };
