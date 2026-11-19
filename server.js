@@ -308,7 +308,7 @@ app.get('/api/dashboard', asyncRoute(async (req, res) => {
   const files = await db.filesByOwner(req.user.userhash);
   const albums = await db.albumsByOwner(req.user.userhash);
   res.json({
-    user: { username: req.user.username },
+    user: { username: req.user.username, role: req.user.role || 'user' },
     files: files.map(file => ({
       name: file.name,
       originalName: file.original_name,

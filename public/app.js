@@ -357,7 +357,20 @@
     const response = await fetch('/api/dashboard');
     if (response.status === 401) { location.assign('/user/login.php'); throw new Error('Please sign in.'); }
     if (!response.ok) throw new Error('Could not load your files. Please try again.');
-    return response.json();
+    const data = await response.json();
+    if (data.user?.role === 'admin') {
+      const nav = document.querySelector('.account-nav');
+      if (nav && !nav.querySelector('[data-admin-link]')) {
+        const link = document.createElement('a');
+        link.href = '/admin';
+        link.dataset.adminLink = 'true';
+        link.textContent = 'Admin';
+        const logout = nav.querySelector('[data-logout]');
+        if (logout) nav.insertBefore(link, logout);
+        else nav.appendChild(link);
+      }
+    }
+    return data;
   }
   function fileRow(file) {
     const originalName = file.originalName || file.name;

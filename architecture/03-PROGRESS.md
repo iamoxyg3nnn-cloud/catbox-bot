@@ -169,6 +169,8 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Operations actions: live overview counters, Supabase/edge/bot health probes, runtime config viewer and an in-memory `uploadsPaused` maintenance switch that blocks only upload writes.
 - Admin UI is a dependency-free dense dashboard in `public/admin.html` with keyboard-accessible search, pagination, native confirm/edit dialogs, focus return and `aria-live` status toasts.
 - Admin accounts: `users.role` (`user` | `admin`) is in both schemas with an idempotent upgrade for existing databases. A normal signed-in session with `role = admin` is accepted by `/api/admin/*`; the optional `ADMIN_TOKEN` cookie flow remains as a fallback. The console UI detects which method is active and links to the normal login page for account admins.
+- The Vercel frontend serves `/admin` through a rewrite (not a redirect) so the host-only `catsess` cookie from a frontend login reaches the console; `/api/dashboard` now exposes `user.role` and the account nav shows an Admin link to signed-in admins.
+- Fixed a resumable-upload race: a fast retry of `/api/uploads/:id/complete` could get a 409 (staged bytes already consumed by the worker) instead of the queued job. The cached `.done` job is now returned before the byte-count check.
 - Tests: 61/61 passing, including admin auth gating, account-role access, hidden password hashes, byte-purging file deletion, the maintenance switch, and PostgREST search/filter shapes. Supabase adapter read checks passed on all live tables, including wrapped `or(...)` search and exact `and=(...)` filters. `ADMIN_TOKEN` was generated locally and set as a GitHub Actions secret; it is not committed.
 
 ## Handoff notes / gotchas

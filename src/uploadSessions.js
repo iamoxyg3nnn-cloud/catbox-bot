@@ -150,16 +150,19 @@ function register(app, { enqueue }) {
   app.post('/api/uploads/:id/complete', asyncRoute(async (req, res) => {
     const payload = authorize(req, res);
     if (!payload) return;
-    const received = await receivedBytes(payload.id);
-    if (received !== payload.s) {
-      return res.status(409).json({ received, size: payload.s });
-    }
     // Return the same job if the client retries the final acknowledgement.
+    // This must precede the byte-count check: the job worker may already have
+    // consumed and deleted the staged bytes, so a fast retry would otherwise
+    // see zero bytes and get a 409 instead of the already-queued job.
     let job;
     try {
       job = JSON.parse(await fs.promises.readFile(`${stagePath(payload.id)}.done`, 'utf8'));
       return res.status(202).json(job);
     } catch { /* first completion */ }
+    const received = await receivedBytes(payload.id);
+    if (received !== payload.s) {
+      return res.status(409).json({ received, size: payload.s });
+    }
     const jobId = await enqueue({
       jobId: payload.id.slice(0, 24),
       stagedPath: stagePath(payload.id),
