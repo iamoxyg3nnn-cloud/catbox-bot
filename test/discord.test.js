@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { DiscordStorage, expiryFromUrl } = require('../src/storage/discord');
+const { DiscordStorage, Bucket, expiryFromUrl } = require('../src/storage/discord');
 
 const config = {
   discord: {
@@ -29,6 +29,36 @@ function response(status, payload, headers = {}) {
     text: async () => JSON.stringify(payload),
   };
 }
+
+test('Bucket allows bounded concurrency and releases waiters', async () => {
+  const bucket = new Bucket(2);
+  const first = await bucket.acquire();
+  const second = await bucket.acquire();
+  let thirdResolved = false;
+  const third = bucket.acquire().then(release => { thirdResolved = true; return release; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(thirdResolved, false, 'third acquire must wait for a free slot');
+  first();
+  const thirdRelease = await third;
+  assert.equal(thirdResolved, true);
+  second();
+  thirdRelease();
+});
+
+test('Bucket obeys remaining/reset headers and 429 blocks', async () => {
+  const bucket = new Bucket(4);
+  const future = Math.ceil(Date.now() / 1000) + 3;
+  const release = await bucket.acquire();
+  bucket.update(new Headers({
+    'x-ratelimit-remaining': '0',
+    'x-ratelimit-reset': String(future),
+  }));
+  release();
+  const t0 = Date.now();
+  const next = await bucket.acquire();
+  assert.ok(Date.now() - t0 >= 2500, 'acquire must wait out the rate-limit window');
+  next();
+});
 
 test('expiryFromUrl reads the hex ex parameter', () => {
   const url = 'https://cdn.discordapp.com/attachments/1/2/x.txt?ex=65abc123&is=65abc456&hm=deadbeef';

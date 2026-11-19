@@ -17,41 +17,65 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const HEALTH_RETRY_BASE_MS = 60_000;
 const HEALTH_RETRY_MAX_MS = 60 * 60_000;
 
-// Serialises requests through one bucket and tracks Discord's response headers.
-// Bucket sizes are deliberately not hardcoded: we only trust X-RateLimit-*.
+// Bounded-concurrency bucket that still obeys Discord's X-RateLimit-* headers.
+// A fully serialised bucket left saturated runners idle (four 20 MiB uploads to
+// one bot took ~4x a single upload) despite zero 429s. Several requests may now
+// be in flight, while remaining/reset headers and the 429 handler remain the
+// hard ceiling on real Discord pressure.
 class Bucket {
-  constructor() {
+  constructor(concurrency = 4) {
+    this.concurrency = Math.max(1, concurrency);
     this.remaining = 1;
     this.resetAt = 0;
     this.blockedUntil = 0;
-    this.chain = Promise.resolve();
+    this.inFlight = 0;
+    this.waiters = [];
   }
 
   async acquire() {
-    let release;
-    const gate = new Promise(resolve => { release = resolve; });
-    const previous = this.chain;
-    this.chain = previous.then(() => gate);
-    await previous;
-    try {
-      while (Date.now() < this.blockedUntil) {
-        await sleep(Math.min(this.blockedUntil - Date.now(), 30_000));
+    for (;;) {
+      const now = Date.now();
+      if (now < this.blockedUntil) {
+        await sleep(Math.min(this.blockedUntil - now, 30_000));
+        continue;
       }
-      if (this.remaining <= 0 && Date.now() < this.resetAt) {
-        await sleep(Math.max(0, this.resetAt - Date.now()) + 25);
+      if (this.remaining <= 0 && now < this.resetAt) {
+        await sleep(Math.max(0, this.resetAt - now) + 25);
+        continue;
       }
-      return () => release();
-    } catch (err) {
-      release();
-      throw err;
+      if (this.inFlight >= this.concurrency) {
+        await new Promise(resolve => this.waiters.push(resolve));
+        continue;
+      }
+      this.inFlight += 1;
+      if (this.remaining > 0) this.remaining -= 1;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        this.inFlight -= 1;
+        const next = this.waiters.shift();
+        if (next) next();
+      };
     }
   }
 
   update(headers) {
     const remaining = Number(headers.get('x-ratelimit-remaining'));
     const reset = Number(headers.get('x-ratelimit-reset'));
-    if (Number.isFinite(remaining)) this.remaining = remaining;
-    if (Number.isFinite(reset)) this.resetAt = reset * 1000;
+    if (Number.isFinite(reset)) {
+      const resetMs = reset * 1000;
+      if (resetMs > this.resetAt) {
+        // New window: the header's remaining count is authoritative.
+        this.remaining = Number.isFinite(remaining) ? remaining : 1;
+      } else if (Number.isFinite(remaining)) {
+        // Same window: never raise our local estimate above the header value.
+        this.remaining = Math.min(this.remaining, remaining);
+      }
+      this.resetAt = resetMs;
+    } else if (Number.isFinite(remaining)) {
+      this.remaining = remaining;
+    }
   }
 
   block(ms) {
@@ -80,6 +104,7 @@ class DiscordStorage {
     this.health = new Map(this.bots.map(b => [b.id, { up: true, fails: 0, retryAt: 0 }]));
     this.cursor = 0;
     this.buckets = new Map();
+    this.requestConcurrency = this.config.discord.requestConcurrency || 4;
     // Cumulative counters exported through /api/metrics. No tokens or paths.
     this.counters = { requests: 0, rateLimited: 0, retries: 0, lastRateLimitAt: null };
   }
@@ -97,7 +122,7 @@ class DiscordStorage {
   }
 
   bucket(key) {
-    if (!this.buckets.has(key)) this.buckets.set(key, new Bucket());
+    if (!this.buckets.has(key)) this.buckets.set(key, new Bucket(this.requestConcurrency));
     return this.buckets.get(key);
   }
 

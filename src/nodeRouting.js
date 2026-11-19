@@ -98,20 +98,21 @@ async function forwardUpload(node, req) {
 }
 
 // Spoke side: tell the hub where to send uploads for this session.
-async function heartbeatOnce() {
+async function heartbeatOnce(stats) {
   if (!config.controlPlaneUrl || !config.nodePublicUrl) return false;
   const secret = process.env.NODE_UPLOAD_SECRET;
   if (!secret) return false;
+  const load = typeof stats === 'function' ? stats() : (stats || {});
   const payload = {
     node_id: config.nodeId,
     hostname: require('os').hostname(),
     web_url: config.nodePublicUrl,
     status: 'up',
-    pending: 0,
-    active: 0,
+    pending: Number(load.pending) || 0,
+    active: Number(load.active) || 0,
     draining: false,
-    staged_bytes: 0,
-    staged_files: 0,
+    staged_bytes: Number(load.stagedBytes) || 0,
+    staged_files: Number(load.stagedFiles) || 0,
   };
   const response = await fetch(`${config.controlPlaneUrl.replace(/\/+$/, '')}/internal/nodes/heartbeat`, {
     method: 'POST',
@@ -125,11 +126,11 @@ async function heartbeatOnce() {
   return response.ok;
 }
 
-function startHeartbeat() {
+function startHeartbeat(stats) {
   if (!config.nodeMode) return;
   const tick = async () => {
     try {
-      if (await heartbeatOnce()) console.log(`[node ${config.nodeId}] heartbeat -> ${config.controlPlaneUrl}`);
+      if (await heartbeatOnce(stats)) console.log(`[node ${config.nodeId}] heartbeat -> ${config.controlPlaneUrl}`);
       else console.warn(`[node ${config.nodeId}] heartbeat skipped (tunnel/secret not ready)`);
     } catch (err) {
       console.warn(`[node ${config.nodeId}] heartbeat failed: ${err.message}`);

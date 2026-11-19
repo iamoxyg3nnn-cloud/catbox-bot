@@ -363,6 +363,20 @@ app.get('/api/albums/:short', asyncRoute(async (req, res) => {
 // local storage path, so a dead spoke never becomes a user-visible outage.
 // Async uploads stay local: their job ids are owned by this process.
 let routeCursor = 0;
+// Live in-flight upload count, published in spoke heartbeats so the hub can
+// route by actual pressure instead of assuming every runner is idle.
+let activeUploads = 0;
+function trackActiveUploads(handler) {
+  return (req, res) => {
+    activeUploads += 1;
+    let done = false;
+    const finish = () => { if (!done) { done = true; activeUploads -= 1; } };
+    res.once('finish', finish);
+    res.once('close', finish);
+    return handler(req, res);
+  };
+}
+
 async function handleHubUpload(req, res, localHandler) {
   const forwardable = !config.nodeMode
     && req.file
@@ -403,9 +417,9 @@ function localApiUpload(req, res) {
 
 // Multipart parsing first (file uploads); urlencoded bodies were parsed
 // by the global middleware above for the form-style request types.
-app.all('/user/api.php', spokeAuth, safeUpload, (req, res) => {
+app.all('/user/api.php', spokeAuth, safeUpload, trackActiveUploads((req, res) => {
   handleHubUpload(req, res, localApiUpload);
-});
+}));
 
 /* ---------------------------- file serving ----------------------------- */
 
@@ -526,9 +540,9 @@ function localLitterboxUpload(req, res) {
   });
 }
 
-app.all('/litterbox/api.php', spokeAuth, safeUpload, (req, res) => {
+app.all('/litterbox/api.php', spokeAuth, safeUpload, trackActiveUploads((req, res) => {
   handleHubUpload(req, res, localLitterboxUpload);
-});
+}));
 
 /* --------------------------- account actions --------------------------- */
 
@@ -611,7 +625,7 @@ if (require.main === module) {
 
   // A spoke owns one bot and nothing else. It must not run the job runner,
   // metadata mirror or admin console: all three assume a single writer.
-  nodeRouting.startHeartbeat();
+  nodeRouting.startHeartbeat(() => ({ active: activeUploads }));
 
   if (!config.nodeMode) {
     // Supabase can come back empty after its host restarts. Restore the

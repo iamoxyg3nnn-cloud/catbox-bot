@@ -88,6 +88,10 @@ const config = {
     userAgent: process.env.DISCORD_USER_AGENT || 'DiscordBot (catbox-clone, 1.0)',
     timeoutMs: parseInt(process.env.DISCORD_TIMEOUT_MS || '120000', 10),
     maxRetries: parseInt(process.env.DISCORD_MAX_RETRIES || '3', 10),
+    // Bounded parallel Discord requests per bucket. The rate-limit headers and
+    // 429 handler remain the hard cap; this only lets a saturated runner keep
+    // several uploads in flight instead of fully serialising every request.
+    requestConcurrency: Math.max(1, parseInt(process.env.DISCORD_REQUEST_CONCURRENCY || '4', 10)),
     bots: parseBots(),
   },
 
