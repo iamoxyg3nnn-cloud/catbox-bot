@@ -359,8 +359,8 @@ jobs:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           MAX_FILE_SIZE: 20mb
           UPLOAD_MAX_PER_MIN: ${{ vars.UPLOAD_MAX_PER_MIN || '40' }}
-          DISCORD_REQUEST_CONCURRENCY: ${{ vars.DISCORD_REQUEST_CONCURRENCY || '4' }}
-          DISCORD_MAX_CONCURRENCY: ${{ vars.DISCORD_MAX_CONCURRENCY || '8' }}
+          DISCORD_REQUEST_CONCURRENCY: ${{ vars.DISCORD_REQUEST_CONCURRENCY || '8' }}
+          DISCORD_MAX_CONCURRENCY: ${{ vars.DISCORD_MAX_CONCURRENCY || '16' }}
           TRUST_PROXY: '1'
         run: |
           $serverLog = "$env:RUNNER_TEMP\server.log"
