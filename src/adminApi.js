@@ -28,6 +28,7 @@ const TABLE_KEYS = {
 };
 
 const PATCHABLE = {
+  users: ['role'],
   files: ['status'],
   albums: ['title', 'description'],
   upload_jobs: ['status', 'attempts', 'last_error'],
@@ -77,6 +78,9 @@ function sanitizePatch(table, input) {
       if (permitted.length && !permitted.includes(value)) {
         throw new Error(`Invalid status. Use one of: ${permitted.join(', ')}`);
       }
+    } else if (field === 'role') {
+      value = String(value);
+      if (value !== 'user' && value !== 'admin') throw new Error('Role must be user or admin.');
     } else if (field === 'health') {
       value = String(value).slice(0, 40);
     } else {
@@ -170,13 +174,22 @@ function register(app) {
   // same-origin. Vercel redirects /admin here (see public/vercel.json).
   app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'admin.html')));
 
-  app.get('/api/admin/status', (req, res) => res.json({
-    enabled: adminAuth.adminEnabled(),
-    authenticated: Boolean(req.isAdmin),
-  }));
+  app.get('/api/admin/status', (req, res) => {
+    const authenticated = adminAuth.isAdmin(req);
+    const byAccount = Boolean(req.user && req.user.role === 'admin');
+    res.json({
+      enabled: adminAuth.adminEnabled(),
+      authenticated,
+      method: authenticated ? (byAccount ? 'account' : 'token') : null,
+      username: byAccount ? req.user.username : null,
+      tokenEnabled: adminAuth.tokenEnabled(),
+    });
+  });
 
   app.post('/api/admin/login', json, (req, res) => {
-    if (!adminAuth.adminEnabled()) return res.status(503).json({ error: 'Admin console is not configured.' });
+    if (!adminAuth.tokenEnabled()) {
+      return res.status(503).json({ error: 'Token sign-in is disabled. Sign in with an admin account instead.' });
+    }
     if (adminAuth.tooManyAttempts(req)) {
       return res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
     }

@@ -162,10 +162,11 @@
   <div id="loginView" class="login-wrap">
     <form id="loginForm" class="login-card" novalidate>
       <h1>Control room</h1>
-      <p>Operator access to MewPocket. Your token is exchanged for a short-lived, HttpOnly session cookie.</p>
+      <p>Operator access to MewPocket. Sign in with an admin account, or use a token to get a short-lived, HttpOnly operator cookie.</p>
+      <p id="accountLogin" class="hint" hidden>Admin accounts sign in through the <a href="/user/login.php">normal login page</a>, then return here.</p>
       <label for="adminToken">Admin token</label>
       <input id="adminToken" name="token" type="password" autocomplete="current-password" required>
-      <p class="hint">Set <code>ADMIN_TOKEN</code> in the bot environment / GitHub Secrets. Nothing is stored in the browser.</p>
+      <p id="tokenHint" class="hint">Set <code>ADMIN_TOKEN</code> in the bot environment / GitHub Secrets. Nothing is stored in the browser.</p>
       <p id="loginError" class="error" role="alert"></p>
       <button class="btn primary" type="submit">Sign in to console</button>
     </form>
@@ -683,16 +684,22 @@
         $('loginError').textContent = 'Admin console is not configured. Set ADMIN_TOKEN and restart the bot.';
         return;
       }
+      $('accountLogin').hidden = Boolean(status.tokenEnabled);
+      const tokenControls = [$('adminToken'), $('tokenHint'), $('loginError'), $('loginForm').querySelector('button')];
+      for (const control of tokenControls) control.hidden = !status.tokenEnabled;
+      document.querySelector('label[for="adminToken"]').hidden = !status.tokenEnabled;
       if (!status.authenticated) {
         $('loginView').hidden = false;
         $('appView').hidden = true;
-        $('adminToken').focus();
+        if (status.tokenEnabled) $('adminToken').focus();
         return;
       }
       $('loginView').hidden = true;
       $('appView').hidden = false;
       $('statusDot').className = 'dot good';
-      $('statusText').textContent = 'Operator session active';
+      $('statusText').textContent = status.method === 'account'
+        ? `Signed in as ${status.username || 'admin'}`
+        : 'Token session active';
       await showTab(currentTab);
     }
 

@@ -68,10 +68,11 @@ recreated (empty) on the next start.
 
 ## Admin console
 
-Set `ADMIN_TOKEN` to a long random value (also stored as the GitHub Actions
-secret of the same name) and open `/admin` on the API origin. The console gates
-itself with an HttpOnly, SameSite=Strict, signed 12-hour cookie — the token is
-never written to disk or localStorage. From there an operator can:
+Open `/admin` on the API origin. The console accepts either a normal signed-in
+account whose `users.role` is `admin`, or an `ADMIN_TOKEN` exchange that issues
+an HttpOnly, SameSite=Strict, signed 12-hour cookie. Admin accounts sign in at
+`/user/login.php` and return to `/admin`; no second token is needed. The token
+is never written to disk or localStorage. From there an operator can:
 
 - review live counts, runtime config, Discord 429 rate and journal backlog;
 - browse and search every metadata table (users, sessions, files, albums,
@@ -79,8 +80,8 @@ never written to disk or localStorage. From there an operator can:
 - delete files, albums, contact messages and journal entries, with file
   deletion removing the Discord message **before** the metadata row;
 - delete an account and purge every file it owns;
-- edit safe fields (file status, album text, job state, bot health/enabled,
-  node draining, journal resolution);
+- edit safe fields (user role, file status, album text, job state, bot
+  health/enabled, node draining, journal resolution);
 - requeue or fail stuck upload jobs, reconcile the orphan journal;
 - pause/resume all uploads for maintenance and run Supabase/edge/bot health checks.
 

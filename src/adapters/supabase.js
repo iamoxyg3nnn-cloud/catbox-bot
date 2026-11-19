@@ -75,9 +75,10 @@ async function rawSelect(table, queryString) {
 
 /* ---------------- users ---------------- */
 
-async function createUser(username, email, passwordHash, userhash) {
+async function createUser(username, email, passwordHash, userhash, role = 'user') {
   const rows = await insert('users', {
     username, email, password_hash: passwordHash, userhash, created_at: Date.now(),
+    role: role === 'admin' ? 'admin' : 'user',
   });
   return Number(rows[0].id);
 }
@@ -86,6 +87,10 @@ const findUserByName = username => first('users', { username: `eq.${username}`, 
 const findUserByEmail = email => first('users', { email: `eq.${email}`, limit: 1 });
 const findUserByHash = userhash => userhash ? first('users', { userhash: `eq.${userhash}`, limit: 1 }) : null;
 const findUserById = id => first('users', { id: `eq.${id}`, limit: 1 });
+
+async function setUserRole(userId, role) {
+  await patch('users', { id: `eq.${userId}` }, { role: role === 'admin' ? 'admin' : 'user' });
+}
 
 async function setPassword(userId, passwordHash) {
   await patch('users', { id: `eq.${userId}` }, { password_hash: passwordHash });
@@ -472,7 +477,7 @@ async function adminUpdate(table, key, value, patchData) {
 module.exports = {
   getDb: () => null,
   closeDb: async () => {},
-  createUser, findUserByName, findUserByEmail, findUserByHash, findUserById, setPassword,
+  createUser, findUserByName, findUserByEmail, findUserByHash, findUserById, setUserRole, setPassword,
   createSession, getSession, destroySession,
   recordFile, getFile, filesByOwner, deleteFilesOwnedBy,
   expiredFiles, deleteFileRows, purgeExpiredFiles,

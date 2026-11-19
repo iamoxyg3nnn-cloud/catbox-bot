@@ -19,7 +19,8 @@ function getDb() {
       email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
       password_hash TEXT NOT NULL,
       userhash      TEXT NOT NULL UNIQUE,
-      created_at    INTEGER NOT NULL
+      created_at    INTEGER NOT NULL,
+      role          TEXT NOT NULL DEFAULT 'user'
     );
 
     CREATE TABLE IF NOT EXISTS files (
@@ -118,9 +119,16 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_journal_unresolved
       ON upload_journal(resolved);
   `);
+  migrateUsersTable();
   migrateFilesTable();
   migrateNodesTable();
   return db;
+}
+
+// Older installs had no roles; everyone was a regular account.
+function migrateUsersTable() {
+  const columns = new Set(db.prepare('PRAGMA table_info(users)').all().map(row => row.name));
+  if (!columns.has('role')) db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
 }
 
 // Existing installs only have the original columns. Add Discord metadata
@@ -159,10 +167,10 @@ function closeDb() {
 
 /* ---------------- users ---------------- */
 
-function createUser(username, email, passwordHash, userhash) {
+function createUser(username, email, passwordHash, userhash, role = 'user') {
   const r = getDb().prepare(
-    'INSERT INTO users (username, email, password_hash, userhash, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(username, email, passwordHash, userhash, Date.now());
+    'INSERT INTO users (username, email, password_hash, userhash, created_at, role) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(username, email, passwordHash, userhash, Date.now(), role === 'admin' ? 'admin' : 'user');
   return Number(r.lastInsertRowid);
 }
 
@@ -181,6 +189,11 @@ function findUserByHash(userhash) {
 
 function findUserById(id) {
   return getDb().prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
+function setUserRole(userId, role) {
+  getDb().prepare('UPDATE users SET role = ? WHERE id = ?')
+    .run(role === 'admin' ? 'admin' : 'user', userId);
 }
 
 function setPassword(userId, passwordHash) {
@@ -611,7 +624,7 @@ function adminUpdate(table, key, value, patch) {
 
 module.exports = {
   getDb, closeDb,
-  createUser, findUserByName, findUserByEmail, findUserByHash, findUserById, setPassword,
+  createUser, findUserByName, findUserByEmail, findUserByHash, findUserById, setUserRole, setPassword,
   createSession, getSession, destroySession,
   recordFile, getFile, filesByOwner, deleteFilesOwnedBy,
   expiredFiles, deleteFileRows, purgeExpiredFiles,

@@ -129,6 +129,17 @@ test('backend errors surface with status and body detail', async () => {
   );
 });
 
+test('createUser writes the admin role when requested', async () => {
+  let call;
+  global.fetch = async (url, init) => {
+    call = { url: String(url), init };
+    return json([{ id: 7 }], 201);
+  };
+  const id = await db.createUser('boss', 'boss@example.test', 'hash', 'userhash-1', 'admin');
+  assert.equal(id, 7);
+  assert.equal(JSON.parse(call.init.body).role, 'admin');
+});
+
 test('adminQuery wraps OR search inside a single AND expression', async () => {
   let url;
   global.fetch = async requestUrl => {

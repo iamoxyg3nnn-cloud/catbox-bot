@@ -573,6 +573,27 @@ test('admin console is protected by a signed session cookie', async () => {
   assert.equal(authenticated.authenticated, true);
 });
 
+test('a normal account with the admin role can enter the console', async () => {
+  const users = await fetch(`${BASE}/api/admin/tables/users`, { headers: { cookie: adminCookie } }).then(response => response.json());
+  const target = users.rows.find(user => user.username === 'smoketester');
+  assert.ok(target, 'the registered smoke-test account should be listed');
+
+  const promoted = await fetch(`${BASE}/api/admin/tables/users`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    body: JSON.stringify({ value: target.id, patch: { role: 'admin' } }),
+  });
+  assert.equal(promoted.status, 200);
+
+  const status = await fetch(`${BASE}/api/admin/status`, { headers: { cookie: sessionCookie } }).then(response => response.json());
+  assert.equal(status.authenticated, true);
+  assert.equal(status.method, 'account');
+  assert.equal(status.username, 'smoketester');
+
+  const overview = await fetch(`${BASE}/api/admin/overview`, { headers: { cookie: sessionCookie } });
+  assert.equal(overview.status, 200);
+});
+
 test('admin overview and table listings expose metadata without password hashes', async () => {
   const overview = await fetch(`${BASE}/api/admin/overview`, { headers: { cookie: adminCookie } }).then(response => response.json());
   assert.equal(overview.ok, true);

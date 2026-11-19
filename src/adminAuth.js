@@ -19,8 +19,19 @@ function secret() {
   return value && value.length >= 12 ? value : null;
 }
 
-function adminEnabled() {
+function tokenEnabled() {
   return Boolean(secret());
+}
+
+// The console is available whenever either an ADMIN_TOKEN is configured or a
+// user account carries the admin role. The role comes from the normal session
+// middleware, so no second credential is needed for an admin account.
+function adminEnabled() {
+  return true;
+}
+
+function isAdmin(req) {
+  return Boolean(req.isAdmin || (req.user && req.user.role === 'admin'));
 }
 
 function sign(payload) {
@@ -77,8 +88,7 @@ function middleware(req, _res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  if (!adminEnabled()) return res.status(503).json({ error: 'Admin console is not configured.' });
-  if (!req.isAdmin) return res.status(401).json({ error: 'Admin sign-in required.' });
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Admin sign-in required.' });
   next();
 }
 
@@ -92,6 +102,6 @@ function clearCookie(res) {
 
 module.exports = {
   COOKIE, TTL_MS,
-  adminEnabled, issue, verify, middleware, requireAdmin,
+  adminEnabled, tokenEnabled, isAdmin, issue, verify, middleware, requireAdmin,
   tooManyAttempts, clearAttempts, setCookie, clearCookie,
 };

@@ -21,8 +21,11 @@ create table if not exists users (
   email         text not null unique,
   password_hash text not null,
   userhash      text not null unique,
-  created_at    bigint not null
+  created_at    bigint not null,
+  role          text not null default 'user' check (role in ('user', 'admin'))
 );
+-- Idempotent upgrade for databases created before roles existed.
+alter table users add column if not exists role text not null default 'user';
 
 create table if not exists sessions (
   token      text primary key,
