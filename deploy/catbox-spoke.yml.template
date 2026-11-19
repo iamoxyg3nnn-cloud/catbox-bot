@@ -5,6 +5,12 @@ name: Catbox Spoke __NODE_ID__
 # Cloudflare quick tunnel. It does NOT run the admin console, job runner,
 # metadata mirror or expiry purge (all single-writer). Each run queues its own
 # successor so the spoke stays online by chaining, never by a cron trigger.
+#
+# Like the hub, this runs on a windows-latest GitHub-hosted runner. Its D:
+# drive (~150 GiB) is transient staging (D:\catbox_staging) for the life of the
+# run; Tailscale + RDP expose the session to the operator. Neither supplies
+# durable storage: Discord is the only byte store and a staged body is deleted
+# only after Discord confirms the attachment.
 
 on:
   workflow_dispatch:
@@ -29,6 +35,7 @@ jobs:
     timeout-minutes: 360
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
     steps:
       - name: Checkout
@@ -85,6 +92,93 @@ jobs:
           # Transient bytes only, deleted once Discord confirms the attachment.
           New-Item -ItemType Directory -Force -Path 'D:\catbox_staging' | Out-Null
           Write-Host "Spoke staging ready: D:\catbox_staging"
+          Write-Host ("(DISK) C: free=" + [math]::Round((Get-PSDrive C).Free/1GB,1) + "GB  D: free=" + [math]::Round((Get-PSDrive D).Free/1GB,1) + "GB")
+
+      - name: Enable Tailscale RDP access
+        if: env.TAILSCALE_AUTH_KEY != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # GitHub-hosted runners inject proxy variables that hijack
+          # tailscaled's control-plane TLS handshake ("Tailscale is starting").
+          foreach ($v in 'ALL_PROXY','all_proxy','HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy') {
+            Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+          }
+
+          try {
+            $msi = "$env:RUNNER_TEMP\tailscale-setup.msi"
+            if (-not (Test-Path $msi)) {
+              Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' `
+                -OutFile $msi -UseBasicParsing -TimeoutSec 120
+            }
+            $rc = (Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/quiet', '/norestart') -Wait -PassThru).ExitCode
+            if ($rc -ne 0) { throw "Tailscale MSI install exited $rc" }
+
+            $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+            if (-not (Test-Path $ts)) { throw "tailscale.exe not found after install" }
+
+            Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service -Name TermService -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -ErrorAction SilentlyContinue
+            New-NetFirewallRule -DisplayName 'Catbox operator RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+
+            $rdpUser = 'catbox-rdp'
+            $password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object { [char]$_ })
+            & net user $rdpUser $password /add /y 2>&1 | Out-Null
+            & net localgroup administrators $rdpUser /add /y 2>&1 | Out-Null
+
+            $hostname = "catbox-spoke-__NODE_ID__-$env:GITHUB_RUN_ID"
+            $upArgs = @('up', "--authkey=$env:TAILSCALE_AUTH_KEY", "--hostname=$hostname", '--accept-dns=false', '--timeout=120s', '--reset')
+            & $ts @upArgs 2>&1 | ForEach-Object { Write-Host "tailscale: $_" }
+
+            $ip = ''
+            for ($i = 0; $i -lt 18; $i++) {
+              $ip = (& $ts ip -4 2>$null | Out-String).Trim()
+              if ($ip -match '^\d+\.\d+\.\d+\.\d+$') { break }
+              Start-Sleep -Seconds 5
+            }
+
+            if ($ip -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+              # Some runners cannot bring up the WinTun adapter. Retry with the
+              # userspace daemon, as the reference fleet does.
+              Write-Warning 'Tailscale WinTun did not come up; retrying with userspace networking.'
+              Stop-Service -Name Tailscale -Force -ErrorAction SilentlyContinue
+              Get-Process tailscaled -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+              $stateDir = "$env:TEMP\CatboxTailscaleUserspace"
+              New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+              $stateFile = Join-Path $stateDir 'server-state.conf'
+              $tsd = "$env:ProgramFiles\Tailscale\tailscaled.exe"
+              Start-Process -FilePath $tsd -ArgumentList @("--state=`"$stateFile`"", '--tun=userspace-networking') -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+              Start-Sleep -Seconds 20
+              & $ts @upArgs 2>&1 | ForEach-Object { Write-Host "tailscale(userspace): $_" }
+              for ($i = 0; $i -lt 24; $i++) {
+                $ip = (& $ts ip -4 2>$null | Out-String).Trim()
+                if ($ip -match '^\d+\.\d+\.\d+\.\d+$') { break }
+                Start-Sleep -Seconds 5
+              }
+            }
+
+            if ($ip -match '^\d+\.\d+\.\d+\.\d+$') {
+              "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
+              Write-Host "======================================="
+              Write-Host "  CATBOX SPOKE __NODE_ID__ RDP (this session only)"
+              Write-Host "  mstsc /v:$ip"
+              Write-Host "  user: $rdpUser"
+              Write-Host "  pass: $password"
+              Write-Host "======================================="
+            } else {
+              # RDP is an operator convenience, not a dependency of the bot.
+              Write-Warning 'Tailscale did not obtain an IPv4 address - RDP disabled, spoke will still start.'
+            }
+          } catch {
+            Write-Warning "Tailscale/RDP setup failed: $($_.Exception.Message) - spoke will still start."
+          }
+
+      - name: Tailscale RDP not configured
+        if: env.TAILSCALE_AUTH_KEY == ''
+        shell: pwsh
+        run: Write-Warning 'TAILSCALE_AUTH_KEY is not set - RDP access is disabled. Add the secret to enable it.'
 
       - name: Write runtime configuration
         shell: pwsh
