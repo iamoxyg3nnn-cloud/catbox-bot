@@ -88,6 +88,29 @@
     onProgress?.(session.size, session.size);
     return done.json();
   }
+
+  // Upload many files through a bounded queue. Each file goes through the same
+  // resumable chunk uploader as a single-file upload, but at most five files are
+  // in flight at once. That keeps the number of simultaneous connections small
+  // and leaves the per-IP throttle and Cloudflare's read timeout untouched.
+  function batchUploadFiles(files, { userhash, time, onUpdate, onQueue } = {}) {
+    const Queue = window.UploadQueue;
+    if (!Queue) return Promise.reject(new Error('The batch uploader is not available. Please refresh the page.'));
+    const queue = new Queue({
+      concurrency: 5,
+      retries: 2,
+      onUpdate,
+      uploader: async (file, { signal, onProgress, onStatus }) => {
+        const job = await chunkedUpload(file, { userhash, time, signal, onProgress });
+        onStatus?.('processing');
+        return pollJob(job.status_url, null, signal);
+      },
+    });
+    queue.add(files);
+    onQueue?.(queue); // expose it before run() emits the first progress update
+    return queue.run().then(() => queue);
+  }
+
   const icons = {
     cat: '<path d="m4 8 1.3-4 3.2 2h3L14.7 4 16 8v5a6 6 0 0 1-12 0z"/><path d="M8 12h.01M12 12h.01M9 16h2"/>',
     upload: '<path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M20 16v4H4v-4"/>',
@@ -140,7 +163,7 @@
       ? '<a href="/user/index.php">My files</a><a href="/user/albums.php">Albums</a>'
       : '<a href="/user/login.php">Sign in</a><a href="/user/register.php">Create account</a>';
     const links = `${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Legal / Privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button>`;
-    return `<div class="classic-home ${temporary ? 'is-temporary' : ''}"><main id="main" class="classic-main"><section class="classic-uploader" aria-label="Upload a file"><div class="upload-panel" id="panel-file"><label class="dropzone" id="dropzone" for="file-input"><input class="file-picker" id="file-input" type="file" aria-label="Select a file to upload"><span class="dropzone-title">Select or drop a file</span><span class="dropzone-hint">or tap to choose from your device · 20 MB max</span><span class="upload-file-name" id="file-name"></span></label></div><div class="urlUploads"><p><button class="classic-link" id="tab-url" type="button" aria-expanded="false" aria-controls="url-form">Upload via URL</button></p><form class="url-form" id="url-form" hidden><label class="field-label" for="file-url">Paste a direct file link</label><div class="url-input-row"><input class="field" id="file-url" name="url" type="url" placeholder="https://example.com/file.png" required><button class="classic-go" type="submit">Upload</button></div><button class="classic-link" id="tab-file-return" type="button" aria-expanded="false">Choose a file instead</button></form></div>${temporary ? '<div class="classic-expiry"><label for="expiry">Remove after</label><select id="expiry" class="select-small"><option value="1h">1 hour</option><option value="12h">12 hours</option><option value="24h" selected>24 hours</option><option value="72h">72 hours</option></select><small class="field-hint">The link works until this time, then the file is removed.</small></div>' : ''}<div class="upload-status" id="upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="progress-track" hidden><span id="progress-bar"></span></div><div id="upload-result"></div></section><nav class="classic-nav" aria-label="Main navigation">${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Terms &amp; privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button></nav><details class="mobile-nav"><summary>Menu</summary><nav aria-label="Mobile navigation">${links}</nav></details><section class="classic-support"><p><strong>Simple file sharing, with clear limits.</strong></p><div class="classic-support-links"><a href="/faq.php">How uploads work</a><a href="/tools.php">Upload options</a><a href="/user/register.php">Create an account</a></div><div class="classic-support-bar"><span>Up to 20 MB · No account required</span></div></section><section class="classic-notice"><b>Need a temporary link?</b><br><a href="/litterbox.php">Use temporary uploads</a> to choose when the file expires.</section><p class="classic-privacy-note">${temporary ? 'Anyone with a temporary link can open the file until it expires.' : 'Anyone with a file link can open it. Sign in before uploading if you want to manage the file later.'}</p><footer class="legacy-footer"><a href="/contact.php">Contact</a></footer></main></div>`;
+    return `<div class="classic-home ${temporary ? 'is-temporary' : ''}"><main id="main" class="classic-main"><section class="classic-uploader" aria-label="Upload a file"><div class="upload-panel" id="panel-file"><label class="dropzone" id="dropzone" for="file-input"><input class="file-picker" id="file-input" type="file" multiple aria-label="Select one or more files to upload"><span class="dropzone-title">Select or drop a file</span><span class="dropzone-hint">or tap to choose from your device · 20 MB max</span><span class="upload-file-name" id="file-name"></span></label></div><div class="urlUploads"><p><button class="classic-link" id="tab-url" type="button" aria-expanded="false" aria-controls="url-form">Upload via URL</button></p><form class="url-form" id="url-form" hidden><label class="field-label" for="file-url">Paste a direct file link</label><div class="url-input-row"><input class="field" id="file-url" name="url" type="url" placeholder="https://example.com/file.png" required><button class="classic-go" type="submit">Upload</button></div><button class="classic-link" id="tab-file-return" type="button" aria-expanded="false">Choose a file instead</button></form></div>${temporary ? '<div class="classic-expiry"><label for="expiry">Remove after</label><select id="expiry" class="select-small"><option value="1h">1 hour</option><option value="12h">12 hours</option><option value="24h" selected>24 hours</option><option value="72h">72 hours</option></select><small class="field-hint">The link works until this time, then the file is removed.</small></div>' : ''}<div class="upload-status" id="upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="progress-track" hidden><span id="progress-bar"></span></div><div id="upload-result"></div></section><nav class="classic-nav" aria-label="Main navigation">${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Terms &amp; privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button></nav><details class="mobile-nav"><summary>Menu</summary><nav aria-label="Mobile navigation">${links}</nav></details><section class="classic-support"><p><strong>Simple file sharing, with clear limits.</strong></p><div class="classic-support-links"><a href="/faq.php">How uploads work</a><a href="/tools.php">Upload options</a><a href="/user/register.php">Create an account</a></div><div class="classic-support-bar"><span>Up to 20 MB · No account required</span></div></section><section class="classic-notice"><b>Need a temporary link?</b><br><a href="/litterbox.php">Use temporary uploads</a> to choose when the file expires.</section><p class="classic-privacy-note">${temporary ? 'Anyone with a temporary link can open the file until it expires.' : 'Anyone with a file link can open it. Sign in before uploading if you want to manage the file later.'}</p><footer class="legacy-footer"><a href="/contact.php">Contact</a></footer></main></div>`;
   }
 
   function initHomeLayout() {
@@ -324,7 +347,7 @@
   }
 
   function renderLibrary() {
-    const content = `<section class="page-intro"><div><span class="eyebrow">YOUR ACCOUNT</span><h1>My files</h1><p>Files uploaded while you were signed in. Signed-out uploads do not appear here.</p></div><button class="button button-primary" type="button" data-open-library-upload aria-expanded="false" aria-controls="library-upload-panel">${icon('upload', true)} Upload a file</button></section><section class="library-upload-panel" id="library-upload-panel" aria-labelledby="library-upload-title" hidden><div class="library-upload-heading"><div><span class="eyebrow">ADD TO YOUR LIBRARY</span><h2 id="library-upload-title">Upload a file</h2><p>Files uploaded here are saved to your account. Up to 20 MB per file.</p></div><button class="button button-quiet button-small" id="library-upload-close" type="button">Close</button></div><label class="library-upload-dropzone" id="library-upload-dropzone" for="library-file-input"><input class="library-upload-input" id="library-file-input" type="file" aria-describedby="library-upload-hint"><span class="library-upload-prompt">${icon('upload', true)} Choose a file or drop it here</span><span class="field-hint" id="library-upload-hint">The file will be added to your account library.</span><span class="library-upload-filename" id="library-upload-filename"></span></label><div class="upload-status" id="library-upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="library-upload-progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" hidden><span id="library-upload-progress-bar"></span></div><div id="library-upload-result"></div></section><section class="metric-row" id="metrics"><div class="metric-card"><div class="metric-label">Files</div><div class="metric-value" id="file-count">—</div><div class="metric-foot">Available in your library</div></div><div class="metric-card"><div class="metric-label">Albums</div><div class="metric-value" id="album-count">—</div><div class="metric-foot"><a href="/user/albums.php">View albums</a></div></div><div class="metric-card"><div class="metric-label">Sharing reminder</div><div class="metric-value metric-note">${icon('shield', true)} Link access</div><div class="metric-foot">Anyone with a link can open that file</div></div></section><section class="library-card"><div class="library-head"><div><h2>Your uploads</h2><p>Search, open, copy, or remove a file you own.</p></div><label class="search-label" for="file-search">Find a file<input class="search-box" id="file-search" type="search" placeholder="Search filenames" autocomplete="off"></label></div><div class="table-labels" id="file-table-head" hidden><span>File</span><span>Size</span><span>Added</span><span class="actions-label">Actions</span></div><div class="file-list" id="file-list" aria-live="polite"><div class="loading-state" role="status">Loading your files…</div></div><p class="search-empty" id="file-search-empty" hidden>No files match that search. Try another filename.</p></section>`;
+    const content = `<section class="page-intro"><div><span class="eyebrow">YOUR ACCOUNT</span><h1>My files</h1><p>Files uploaded while you were signed in. Signed-out uploads do not appear here.</p></div><button class="button button-primary" type="button" data-open-library-upload aria-expanded="false" aria-controls="library-upload-panel">${icon('upload', true)} Upload a file</button></section><section class="library-upload-panel" id="library-upload-panel" aria-labelledby="library-upload-title" hidden><div class="library-upload-heading"><div><span class="eyebrow">ADD TO YOUR LIBRARY</span><h2 id="library-upload-title">Upload a file</h2><p>Files uploaded here are saved to your account. Up to 20 MB per file.</p></div><button class="button button-quiet button-small" id="library-upload-close" type="button">Close</button></div><label class="library-upload-dropzone" id="library-upload-dropzone" for="library-file-input"><input class="library-upload-input" id="library-file-input" type="file" multiple aria-describedby="library-upload-hint"><span class="library-upload-prompt">${icon('upload', true)} Choose a file or drop it here</span><span class="field-hint" id="library-upload-hint">The file will be added to your account library.</span><span class="library-upload-filename" id="library-upload-filename"></span></label><div class="upload-status" id="library-upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="library-upload-progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" hidden><span id="library-upload-progress-bar"></span></div><div id="library-upload-result"></div></section><section class="metric-row" id="metrics"><div class="metric-card"><div class="metric-label">Files</div><div class="metric-value" id="file-count">—</div><div class="metric-foot">Available in your library</div></div><div class="metric-card"><div class="metric-label">Albums</div><div class="metric-value" id="album-count">—</div><div class="metric-foot"><a href="/user/albums.php">View albums</a></div></div><div class="metric-card"><div class="metric-label">Sharing reminder</div><div class="metric-value metric-note">${icon('shield', true)} Link access</div><div class="metric-foot">Anyone with a link can open that file</div></div></section><section class="library-card"><div class="library-head"><div><h2>Your uploads</h2><p>Search, open, copy, or remove a file you own.</p></div><label class="search-label" for="file-search">Find a file<input class="search-box" id="file-search" type="search" placeholder="Search filenames" autocomplete="off"></label></div><div class="table-labels" id="file-table-head" hidden><span>File</span><span>Size</span><span>Added</span><span class="actions-label">Actions</span></div><div class="file-list" id="file-list" aria-live="polite"><div class="loading-state" role="status">Loading your files…</div></div><p class="search-empty" id="file-search-empty" hidden>No files match that search. Try another filename.</p></section>`;
     return shell('library', content);
   }
 
@@ -533,7 +556,78 @@
       }
     }
 
-    input.addEventListener('change', () => upload(input.files?.[0]));
+    function renderLibraryBatch(stats, items, queue) {
+      status.textContent = `Uploading ${stats.done + stats.failed} of ${stats.total} · ${stats.percent}%`;
+      status.dataset.kind = stats.failed ? 'error' : '';
+      progress.hidden = false;
+      progress.setAttribute('aria-valuenow', String(stats.percent));
+      progressBar.style.width = `${stats.percent}%`;
+      result.innerHTML = '<button class="button button-quiet button-small" type="button" data-cancel-upload>Cancel all</button>'
+        + `<ul class="batch-list" aria-label="Upload queue">${items.map(item => {
+        const label = item.label.length > 42 ? `${item.label.slice(0, 39)}…` : item.label;
+        const detail = item.status === 'done' ? 'Saved'
+          : item.status === 'failed' ? esc(item.error || 'Failed')
+          : item.status === 'processing' ? 'Saving to storage…'
+          : item.status === 'cancelled' ? 'Cancelled'
+          : item.status === 'uploading' ? `${item.sent}/${item.total} bytes` : 'Waiting…';
+        return `<li class="batch-item" data-status="${item.status}"><span class="batch-name">${esc(label)}</span><span class="batch-detail">${detail}</span></li>`;
+      }).join('')}</ul>`;
+      result.querySelector('[data-cancel-upload]')?.addEventListener('click', () => queue?.cancel());
+    }
+
+    function batchUploadLibrary(files) {
+      if (request) return;
+      const tooBig = files.find(f => f.size > MAX_UPLOAD_BYTES);
+      if (tooBig) {
+        filename.textContent = '';
+        status.textContent = `"${tooBig.name}" is larger than the 20 MB limit. No files were uploaded.`;
+        status.dataset.kind = 'error';
+        input.value = '';
+        return;
+      }
+      filename.textContent = `${files.length} files selected`;
+      status.textContent = 'Preparing your upload…';
+      status.dataset.kind = '';
+      result.replaceChildren();
+      progress.hidden = false;
+      progressBar.style.width = '0%';
+      input.disabled = true;
+      $('#library-upload-close').disabled = true;
+      triggers().forEach(button => { button.disabled = true; });
+      dropzone.setAttribute('aria-busy', 'true');
+      input.value = '';
+      let queue;
+      batchUploadFiles(files, { userhash: getCookie('userhash'), onQueue: q => { queue = q; }, onUpdate: (s, i) => renderLibraryBatch(s, i, queue) }).then(q => {
+        queue = q;
+        const fresh = q.items.filter(i => i.status === 'done' && i.url).map(i => {
+          const name = new URL(i.url, location.origin).pathname.split('/').pop();
+          return { name, originalName: i.label, mime: 'application/octet-stream', size: i.total, uploadedAt: Date.now(), url: i.url };
+        });
+        data.files.unshift(...fresh);
+        $('#file-count').textContent = data.files.length;
+        renderFileList(data.files);
+        applySearch();
+        const s = q.stats;
+        status.textContent = `Finished ${s.done} of ${s.total} files${s.failed ? ` · ${s.failed} failed` : ''}. Added to My files.`;
+        status.dataset.kind = s.failed ? 'error' : 'success';
+      }).catch(err => { status.textContent = err.message || 'The batch could not be uploaded.'; status.dataset.kind = 'error'; })
+        .finally(() => {
+          request = null;
+          input.disabled = false;
+          $('#library-upload-close').disabled = false;
+          triggers().forEach(button => { button.disabled = false; });
+          dropzone.removeAttribute('aria-busy');
+          result.querySelector('[data-cancel-upload]')?.remove();
+        });
+    }
+
+    const pickFiles = list => {
+      const files = Array.from(list || []);
+      if (!files.length) return;
+      if (files.length === 1) upload(files[0]);
+      else batchUploadLibrary(files);
+    };
+    input.addEventListener('change', () => pickFiles(input.files));
     ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => {
       event.preventDefault();
       dropzone.classList.add('is-dragging');
@@ -542,7 +636,7 @@
       event.preventDefault();
       dropzone.classList.remove('is-dragging');
     }));
-    dropzone.addEventListener('drop', event => upload(event.dataTransfer.files?.[0]));
+    dropzone.addEventListener('drop', event => { event.preventDefault(); pickFiles(event.dataTransfer.files); });
   }
   async function initAlbums() {
     signOut($('[data-logout]'));
@@ -599,15 +693,21 @@
   // Follow a 202 job response until the background Discord upload finishes.
   // Each probe is time-bounded and transient failures are retried with backoff,
   // so a blip in the status endpoint cannot leave the UI spinning forever.
-  async function pollJob(statusUrl, onUpdate) {
+  async function pollJob(statusUrl, onUpdate, signal) {
     const deadline = Date.now() + 5 * 60 * 1000;
     let failures = 0;
     while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error('Upload cancelled.');
       await new Promise(resolve => setTimeout(resolve, 700 + failures * 600));
+      if (signal?.aborted) throw new Error('Upload cancelled.');
       let response;
       try {
-        response = await fetch(statusUrl, { cache: 'no-store', signal: AbortSignal.timeout(15_000) });
+        const probeSignal = signal && typeof AbortSignal.any === 'function'
+          ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+          : AbortSignal.timeout(15_000);
+        response = await fetch(statusUrl, { cache: 'no-store', signal: probeSignal });
       } catch {
+        if (signal?.aborted) throw new Error('Upload cancelled.');
         if (++failures >= 5) throw new Error('Lost contact with the upload status service. Check your connection and try again.');
         continue;
       }
@@ -675,6 +775,54 @@
       result.innerHTML = `<div class="result-link"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a><button class="classic-copy" type="button" data-result-copy>Copy link</button></div>`;
       $('[data-result-copy]', result)?.addEventListener('click', () => copyText(url));
     }
+
+    function renderBatch(stats, items, queue) {
+      if (!status || !result || !progress) return;
+      setStatus(`Uploading ${stats.done + stats.failed} of ${stats.total} · ${stats.percent}%`, stats.failed ? 'error' : '');
+      bar.style.width = `${stats.percent}%`;
+      result.innerHTML = '<button class="button button-quiet button-small" type="button" data-cancel-upload>Cancel all</button>'
+        + `<ul class="batch-list" aria-label="Upload queue">${items.map(item => {
+        const label = item.label.length > 42 ? `${item.label.slice(0, 39)}…` : item.label;
+        const detail = item.status === 'done'
+          ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">Open link</a>`
+          : item.status === 'failed' ? esc(item.error || 'Failed')
+          : item.status === 'processing' ? 'Saving to storage…'
+          : item.status === 'cancelled' ? 'Cancelled'
+          : item.status === 'uploading' ? `${item.sent}/${item.total} bytes`
+          : 'Waiting…';
+        return `<li class="batch-item" data-status="${item.status}"><span class="batch-name">${esc(label)}</span><span class="batch-detail">${detail}</span></li>`;
+      }).join('')}</ul>`;
+      result.querySelector('[data-cancel-upload]')?.addEventListener('click', () => queue?.cancel());
+    }
+
+    function batchUploadHome(files) {
+      if (uploadBusy) { input.value = ''; setStatus('An upload is already in progress. Please wait for it to finish.', 'error'); return; }
+      const tooBig = files.find(f => f.size > MAX_UPLOAD_BYTES);
+      if (tooBig) {
+        input.value = '';
+        fileName.textContent = '';
+        setStatus(`"${tooBig.name}" is larger than the 20 MB limit. No files were uploaded.`, 'error');
+        return;
+      }
+      uploadBusy = true;
+      input.disabled = true;
+      dropzone?.classList.add('is-uploading');
+      dropzone?.setAttribute('aria-busy', 'true');
+      progress.hidden = false; bar.style.width = '0%';
+      fileName.textContent = `${files.length} files selected`;
+      let queue;
+      batchUploadFiles(files, {
+        userhash: !isLitterbox ? getCookie('userhash') : null,
+        time: isLitterbox ? $('#expiry').value : null,
+        onQueue: q => { queue = q; },
+        onUpdate: (s, i) => renderBatch(s, i, queue),
+      }).then(q => {
+        const s = q.stats;
+        setStatus(`Finished ${s.done} of ${s.total} files${s.failed ? ` · ${s.failed} failed` : ''}.`, s.failed ? 'error' : 'success');
+      }).catch(err => setStatus(err.message || 'The batch could not be uploaded.', 'error'))
+        .finally(() => { uploadBusy = false; input.disabled = false; input.value = ''; dropzone?.classList.remove('is-uploading'); dropzone?.removeAttribute('aria-busy'); result.querySelector('[data-cancel-upload]')?.remove(); });
+    }
+
     function upload(file) {
       if (!file) return;
       if (uploadBusy) { input.value = ''; setStatus('An upload is already in progress. Please wait for it to finish.', 'error'); return; }
@@ -723,10 +871,16 @@
         result.querySelector('[data-cancel-upload]')?.remove();
       };
     }
-    input.addEventListener('change', () => upload(input.files?.[0]));
+    const pickFiles = list => {
+      const files = Array.from(list || []);
+      if (!files.length) return;
+      if (files.length === 1) upload(files[0]);
+      else batchUploadHome(files);
+    };
+    input.addEventListener('change', () => pickFiles(input.files));
     ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.add('is-dragging'); }));
     ['dragleave', 'drop'].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.remove('is-dragging'); }));
-    dropzone.addEventListener('drop', event => upload(event.dataTransfer.files?.[0]));
+    dropzone.addEventListener('drop', event => { event.preventDefault(); pickFiles(event.dataTransfer.files); });
     urlPanel.addEventListener('submit', async event => {
       event.preventDefault(); const field = $('#file-url'); const button = urlPanel.querySelector('button[type="submit"]');
       if (uploadBusy) { setStatus('An upload is already in progress. Please wait for it to finish.', 'error'); return; }
