@@ -112,11 +112,16 @@ create index if not exists idx_jobs_node on upload_jobs(node_id);
 
 create table if not exists discord_bots (
   bot_id       text primary key,
-  channel_id   text not null unique,
+  channel_id   text not null,
   enabled      boolean not null default true,
   health       text not null default 'unknown',
   last_used_at bigint
 );
+
+-- Several bots may legitimately post into the same upload channel. The old
+-- unique constraint blocked registering a fleet that shares one channel and
+-- made the per-session registry seed fail with 23505. bot_id remains the key.
+alter table discord_bots drop constraint if exists discord_bots_channel_id_key;
 
 create table if not exists nodes (
   node_id        text primary key,
