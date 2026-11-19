@@ -1,6 +1,6 @@
 # Progress Tracker (handoff document)
 
-Last updated: 2026-11-18 — **end of third implementation session**
+Last updated: 2026-11-19 — **hub-and-spoke fleet live**
 Next agent: read `01-ARCHITECTURE.md` and `02-PHASES.md` first, then continue from "Remaining".
 
 ## Overall status
@@ -199,6 +199,18 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Added `src/nodeRouting.js`: `pickNode()` (least-loaded, ignores stale/down/draining), `forwardUpload()` (streams the hub's staged multipart file to a spoke), and `startHeartbeat()` (spoke registers/retires its URL). Hub forwards in `server.js` and falls back locally on any error; forwarded staged bytes are deleted after success.
 - Hardened spokes with `X-Catbox-Secret` check on the upload routes so a discovered tunnel URL cannot be used directly. Fixed the Tailscale step's PowerShell backslash-continuation bug (line 121) so RDP setup can actually run.
 - Added 4 unit tests (`test/nodeRouting.test.js`); full suite is 68/68 green.
+
+## Spoke rollout and final verification (2026-11-19)
+- Populated all five spoke repos from the hub source; each has exactly one workflow (`catbox-spoke.yml`) and no `.env`/secrets in git. Each repo holds only its own bot token, seeded without printing values.
+- Fixed three rollout-blocking bugs in `deploy/catbox-spoke.yml.template`:
+  1. The keep-alive step did not export `DISCORD_BOT_TOKEN`; combined with PowerShell unrolling a one-element `DISCORD_BOTS` array into an object, `parseBots()` returned an empty fleet and every spoke upload returned `500`.
+  2. The readiness gate filtered the `/api/nodes` wrapper object instead of `nodes`, so every session self-terminated after 180s. It now reads `$nodes.nodes`.
+  3. Spoke Discord identities are `primary`, `bot2`…`bot5` (matching the hub's resolver) while node ids remain `bot-1`…`bot-5`. Files uploaded by a spoke are therefore downloadable through the hub.
+- Added round-robin tie-breaking in `pickNode()` because all spokes report zero in-flight work; without it the hub pinned every upload to `bot-1`. Full suite is 69/69 green.
+- Hub pushed through `8461d52`; spoke template fix through `973f0ed`; temporary `bootstrap-secrets.yml` and the powerful `BOOTSTRAP_TOKEN` secret were removed after seeding.
+- All five spokes registered `up` in `/api/nodes` and stayed healthy past the old 180s failure point. Six consecutive hub uploads resolved to `bot2`, `bot3`, `bot4`, `bot5`, `primary`, `bot2` — all five bots carry live traffic; staged bytes returned to `0/0`.
+- Live checks passed: API and Vercel origins return `200` for `/admin`, `/api/nodes`, `/api/metrics` and browser pages; Vercel `/admin` and `/api/:path*` are rewrites (no redirects); sync upload returns a plain-text URL; async `X-Catbox-Async: 1` returns `202` + job id and reaches `ready`; downloaded bytes match; contact messages persist in `messages`; admin `ADMIN_TOKEN` exchange issues a session with CSRF, overview/audit load, and a write without `X-CSRF-Token` is rejected `403`; a temporary normal account registered and logged in without gaining admin, then was removed.
+- **Note:** the "user asked about 6 bots" was the hub plus five spokes (six running app instances), not six Discord accounts. There are still exactly five Discord bots; `catbox-bot` is the hub and must not be deleted.
 
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
