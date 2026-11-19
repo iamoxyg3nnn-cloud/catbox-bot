@@ -576,3 +576,5 @@ jobs:
           } else {
             Write-Warning 'ALERT_WEBHOOK_URL not set - no Discord alert sent.'
           }
+
+# Re-indexed after repository migration to iamoxyg3nnn-cloud.
