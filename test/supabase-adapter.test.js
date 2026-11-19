@@ -128,3 +128,30 @@ test('backend errors surface with status and body detail', async () => {
     /Supabase GET users failed \(403\): permission denied/
   );
 });
+
+test('adminQuery wraps OR search inside a single AND expression', async () => {
+  let url;
+  global.fetch = async requestUrl => {
+    url = String(requestUrl);
+    return json([{ name: 'abc.gif' }]);
+  };
+  await db.adminQuery('files', { q: 'gif', where: { status: 'ready' }, limit: 3, offset: 2 });
+  const parsed = new URL(url);
+  const expression = parsed.searchParams.get('and');
+  assert.match(expression, /^\(or\(name\.ilike\.%gif%,original_name\.ilike\.%gif%,/);
+  assert.match(expression, /,status\.eq\.ready\)$/);
+  assert.equal(parsed.searchParams.get('limit'), '3');
+  assert.equal(parsed.searchParams.get('offset'), '2');
+  assert.equal(parsed.searchParams.get('order'), 'uploaded_at.desc');
+});
+
+test('adminQuery wraps exact filters and rejects unknown tables', async () => {
+  let url;
+  global.fetch = async requestUrl => {
+    url = String(requestUrl);
+    return json([{ token: 'abc' }]);
+  };
+  await db.adminQuery('sessions', { where: { user_id: 1 } });
+  assert.equal(new URL(url).searchParams.get('and'), '(user_id.eq.1)');
+  await assert.rejects(() => db.adminQuery('password_reset_tokens', {}), /Unsupported admin table/);
+});

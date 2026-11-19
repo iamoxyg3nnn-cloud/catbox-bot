@@ -410,19 +410,23 @@ function adminCheck(table) {
 }
 
 function adminFilter(table, options = {}) {
-  const parts = [];
+  const clauses = [];
   const params = new URLSearchParams();
   const search = String(options.q || '').replace(/[*%_,]/g, '').slice(0, 120);
   const columns = ADMIN_SEARCH[table] || [];
   if (search && columns.length) {
-    parts.push(`(${columns.map(col => `${col}.ilike.*${search}*`).join(',')})`);
+    // A search term matches ANY allow-listed column, so the inner expression
+    // must be an OR; the outer AND combines it with exact-match filters.
+    clauses.push(`or(${columns.map(col => `${col}.ilike.%${search}%`).join(',')})`);
   }
   const where = options.where && typeof options.where === 'object' ? options.where : {};
   for (const [key, value] of Object.entries(where)) {
     if (!/^[a-z_][a-z0-9_]*$/.test(key)) continue;
-    parts.push(value === null || value === undefined ? `${key}.is.null` : `${key}.eq.${value}`);
+    clauses.push(value === null || value === undefined ? `${key}.is.null` : `${key}.eq.${value}`);
   }
-  if (parts.length) params.set('and', parts.join(','));
+  // PostgREST requires the whole expression to be wrapped once. Bare
+  // `and=foo.eq.1` is parsed as a column named "andfoo" instead of a filter.
+  if (clauses.length) params.set('and', `(${clauses.join(',')})`);
   return params;
 }
 

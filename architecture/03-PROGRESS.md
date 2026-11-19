@@ -168,7 +168,7 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Moderation actions: file delete (Discord message first, then metadata row, with failed purges left in place for the hourly sweep), account delete (all owned files, albums, sessions, then user), album/message/journal deletion, safe field edits, job requeue/fail, journal reconciliation, node drain toggles and Discord bot enable/health toggles.
 - Operations actions: live overview counters, Supabase/edge/bot health probes, runtime config viewer and an in-memory `uploadsPaused` maintenance switch that blocks only upload writes.
 - Admin UI is a dependency-free dense dashboard in `public/admin.html` with keyboard-accessible search, pagination, native confirm/edit dialogs, focus return and `aria-live` status toasts.
-- Tests: 57/57 passing, including admin auth gating, hidden password hashes, byte-purging file deletion and the maintenance switch. Supabase adapter read checks passed on all live tables. `ADMIN_TOKEN` was generated locally and set as a GitHub Actions secret; it is not committed.
+- Tests: 59/59 passing, including admin auth gating, hidden password hashes, byte-purging file deletion, the maintenance switch, and PostgREST search/filter shapes. Supabase adapter read checks passed on all live tables, including wrapped `or(...)` search and exact `and=(...)` filters. `ADMIN_TOKEN` was generated locally and set as a GitHub Actions secret; it is not committed.
 
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
