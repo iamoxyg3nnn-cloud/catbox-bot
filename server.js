@@ -251,7 +251,7 @@ app.get('/api/metrics', asyncRoute(async (req, res) => {
     };
   }
   const journal = db.journalStats ? await db.journalStats() : null;
-  const nodeRows = db.listNodes ? await db.listNodes() : [];
+  const nodeRows = await getNodeRegistry().catch(() => []);
   const storage = getStorage();
   res.json({
     ok: true,
@@ -275,7 +275,7 @@ app.get('/api/metrics', asyncRoute(async (req, res) => {
 
 // Node registry consumed by the Cloudflare Worker for least-loaded routing.
 app.get('/api/nodes', asyncRoute(async (req, res) => {
-  const registered = (await db.listNodes()).map(node => ({
+  const registered = (await getNodeRegistry()).map(node => ({
     id: node.node_id,
     url: node.web_url,
     status: node.status,
@@ -312,6 +312,9 @@ app.post('/internal/nodes/heartbeat', express.json({ limit: '16kb' }), asyncRout
     stagedFiles: Number(b.staged_files) || 0,
     status: b.status || 'up',
   });
+  // A heartbeat may introduce a new spoke or change its load. Make the cached
+  // registry reflect it on the very next routing decision / metrics read.
+  registryCache = null;
   res.json({ ok: true });
 }));
 
@@ -362,6 +365,28 @@ app.get('/api/albums/:short', asyncRoute(async (req, res) => {
 // spoke so each bot can live in its own repo. Any failure falls back to the
 // local storage path, so a dead spoke never becomes a user-visible outage.
 // Async uploads stay local: their job ids are owned by this process.
+// Node registry snapshot. Under load every upload previously made its own live
+// Supabase round-trip just to pick a target; 80 concurrent uploads meant 80
+// concurrent reads and starved the control-plane endpoints (/api/nodes,
+// /api/metrics) when Supabase or the tunnel was busy. Heartbeats are 15s apart,
+// so a 3s snapshot is fresh enough for load-aware routing. A stale snapshot is
+// kept on errors so a transient registry failure never breaks upload routing.
+const REGISTRY_TTL_MS = Math.max(500, parseInt(process.env.NODE_REGISTRY_TTL_MS || '3000', 10));
+let registryCache = null;
+let registryCacheAt = 0;
+async function getNodeRegistry() {
+  const now = Date.now();
+  if (registryCache && now - registryCacheAt < REGISTRY_TTL_MS) return registryCache;
+  try {
+    registryCache = await db.listNodes();
+    registryCacheAt = now;
+  } catch (err) {
+    if (!registryCache) throw err;
+    console.warn('[hub] node registry refresh failed, using stale snapshot:', err.message);
+  }
+  return registryCache;
+}
+
 let routeCursor = 0;
 // Live in-flight upload count, published in spoke heartbeats so the hub can
 // route by actual pressure instead of assuming every runner is idle.
@@ -385,7 +410,7 @@ async function handleHubUpload(req, res, localHandler) {
 
   let node = null;
   try {
-    node = nodeRouting.pickNode(await db.listNodes(), undefined, undefined, routeCursor++);
+    node = nodeRouting.pickNode(await getNodeRegistry(), undefined, undefined, routeCursor++);
   } catch (err) {
     console.warn('[hub] node registry unavailable:', err.message);
   }
