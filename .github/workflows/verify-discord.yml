@@ -1,0 +1,51 @@
+name: Verify Discord bots
+
+# Temporary diagnostic workflow: proves every configured bot token is valid,
+# distinct and able to upload/delete in its own channel. Dispatch-only.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify all five bots
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_BOT_2_TOKEN: ${{ secrets.DISCORD_BOT_2_TOKEN }}
+          DISCORD_BOT_3_TOKEN: ${{ secrets.DISCORD_BOT_3_TOKEN }}
+          DISCORD_BOT_4_TOKEN: ${{ secrets.DISCORD_BOT_4_TOKEN }}
+          DISCORD_BOT_5_TOKEN: ${{ secrets.DISCORD_BOT_5_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          CATBOX_CHANNEL_2: ${{ vars.CATBOX_CHANNEL_2 }}
+          CATBOX_CHANNEL_3: ${{ vars.CATBOX_CHANNEL_3 }}
+          CATBOX_CHANNEL_4: ${{ vars.CATBOX_CHANNEL_4 }}
+          CATBOX_CHANNEL_5: ${{ vars.CATBOX_CHANNEL_5 }}
+        run: |
+          export DISCORD_BOTS=$(jq -n \
+            --arg t1 "$DISCORD_BOT_TOKEN" \
+            --arg t2 "$DISCORD_BOT_2_TOKEN" \
+            --arg t3 "$DISCORD_BOT_3_TOKEN" \
+            --arg t4 "$DISCORD_BOT_4_TOKEN" \
+            --arg t5 "$DISCORD_BOT_5_TOKEN" \
+            --arg c1 "$DISCORD_CHANNEL_ID" \
+            --arg c2 "$CATBOX_CHANNEL_2" \
+            --arg c3 "$CATBOX_CHANNEL_3" \
+            --arg c4 "$CATBOX_CHANNEL_4" \
+            --arg c5 "$CATBOX_CHANNEL_5" \
+            '[{id:"primary",token:$t1,channelId:$c1},
+              {id:"bot2",token:$t2,channelId:$c2},
+              {id:"bot3",token:$t3,channelId:$c3},
+              {id:"bot4",token:$t4,channelId:$c4},
+              {id:"bot5",token:$t5,channelId:$c5}]')
+          node scripts/verify-discord.js --all
