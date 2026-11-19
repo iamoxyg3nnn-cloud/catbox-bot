@@ -20,6 +20,7 @@ const util = require('./src/util');
 const api = require('./src/api');
 const auth = require('./src/auth');
 const adminAuth = require('./src/adminAuth');
+const bruteForce = require('./src/bruteForce');
 const runtimeFlags = require('./src/runtimeFlags');
 const adminApi = require('./src/adminApi');
 const metadataMirror = require('./src/metadataMirror');
@@ -468,9 +469,21 @@ app.all('/litterbox/api.php', safeUpload, (req, res) => {
 /* --------------------------- account actions --------------------------- */
 
 app.post('/user/dologin.php', asyncRoute(async (req, res) => {
-  const user = await auth.authenticate(req.body.username, req.body.password);
-  if (!user) return res.status(401).type('text/plain; charset=utf-8').send('Wrong username or password.');
-  await auth.startSession(res, user);
+  const username = String((req.body && req.body.username) || '').trim();
+  const identity = `login:${username.toLowerCase() || req.ip}`;
+  const state = bruteForce.check(req.ip, identity);
+  if (state.blocked) {
+    const seconds = Math.max(1, Math.ceil(state.retryAfterMs / 1000));
+    return res.status(429).type('text/plain; charset=utf-8')
+      .send(`Too many failed attempts. Try again in ${seconds} seconds.`);
+  }
+  const user = await auth.authenticate(username, req.body.password);
+  if (!user) {
+    bruteForce.fail(req.ip, identity);
+    return res.status(401).type('text/plain; charset=utf-8').send('Wrong username or password.');
+  }
+  bruteForce.clear(req.ip, identity);
+  await auth.rotateSession(req, res, user);
   res.type('text/plain; charset=utf-8').send('Authenticated. Session cookie set.');
 }));
 

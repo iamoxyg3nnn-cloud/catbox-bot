@@ -27,6 +27,15 @@ async function endSession(req, res) {
   res.append('Set-Cookie', `${USERHASH_COOKIE}=; Path=/; SameSite=Lax; Max-Age=0`);
 }
 
+// Discards the pre-login session and starts a fresh one. Prevents session
+// fixation: a token planted in a victim's browser before sign-in is invalid
+// once the password is accepted.
+async function rotateSession(req, res, user) {
+  const cookies = parseCookies(req);
+  if (cookies[SESSION_COOKIE]) await db.destroySession(cookies[SESSION_COOKIE]);
+  return startSession(res, user);
+}
+
 // Attaches req.user for the current request, if any. Calls next(err) on a
 // backend failure so Express can return a 500 instead of hanging.
 async function sessionMiddleware(req, res, next) {
@@ -69,6 +78,6 @@ async function authenticate(username, password) {
 
 module.exports = {
   SESSION_COOKIE, USERHASH_COOKIE,
-  startSession, endSession, sessionMiddleware,
+  startSession, endSession, rotateSession, sessionMiddleware,
   registerUser, authenticate,
 };

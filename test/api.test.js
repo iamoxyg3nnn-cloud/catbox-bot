@@ -539,11 +539,16 @@ test('litterbox rejects an unknown expiry', async () => {
 /* ---------------------------- admin console ---------------------------- */
 
 let adminCookie;
+let adminCsrf;
+
+function adminHeaders(extra = {}) {
+  return { 'Content-Type': 'application/json', cookie: adminCookie, 'X-CSRF-Token': adminCsrf || '', ...extra };
+}
 
 async function adminPost(path, body) {
   return fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    headers: adminHeaders(),
     body: JSON.stringify(body),
   });
 }
@@ -566,12 +571,48 @@ test('admin console is protected by a signed session cookie', async () => {
   const login = await adminPost('/api/admin/login', { token: 'test-admin-token' });
   assert.equal(login.status, 200);
   adminCookie = login.headers.getSetCookie()
-    .find(cookie => cookie.startsWith('catadmin='))
+    .find(cookie => cookie.startsWith('__Host-catadmin='))
     .split(';')[0];
-  assert.ok(adminCookie.length > 'catadmin='.length);
+  assert.ok(adminCookie.length > '__Host-catadmin='.length);
+  adminCsrf = await fetch(`${BASE}/api/admin/status`, { headers: { cookie: adminCookie } })
+    .then(response => response.json())
+    .then(data => data.csrf);
+  assert.ok(adminCsrf, 'status should issue a CSRF token for the admin session');
 
   const authenticated = await fetch(`${BASE}/api/admin/status`, { headers: { cookie: adminCookie } }).then(response => response.json());
   assert.equal(authenticated.authenticated, true);
+
+  const adminPage = await fetch(`${BASE}/admin`);
+  const security = adminPage.headers;
+  const csp = security.get('content-security-policy') || '';
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /script-src 'self' 'sha256-/);
+  assert.match(csp, /style-src 'self' 'sha256-/);
+  assert.equal(security.get('x-frame-options'), 'DENY');
+  assert.match(security.get('cache-control') || '', /no-store/);
+
+  const fs = require('fs');
+  const crypto = require('crypto');
+  const html = fs.readFileSync(require('path').join(__dirname, '..', 'public', 'admin.html'), 'utf8');
+  const inlineScript = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/i.exec(html)[1];
+  const hash = `sha256-${crypto.createHash('sha256').update(inlineScript).digest('base64')}`;
+  assert.ok(csp.includes(hash), 'CSP must allow the console inline script by hash');
+});
+
+test('admin mutations require a valid CSRF token and an allowed origin', async () => {
+  const noToken = await fetch(`${BASE}/api/admin/runtime`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    body: JSON.stringify({ uploadsPaused: false }),
+  });
+  assert.equal(noToken.status, 403);
+
+  const badOrigin = await fetch(`${BASE}/api/admin/runtime`, {
+    method: 'PATCH',
+    headers: adminHeaders({ Origin: 'https://evil.example' }),
+    body: JSON.stringify({ uploadsPaused: false }),
+  });
+  assert.equal(badOrigin.status, 403);
 });
 
 test('a normal account with the admin role can enter the console', async () => {
@@ -581,7 +622,7 @@ test('a normal account with the admin role can enter the console', async () => {
 
   const promoted = await fetch(`${BASE}/api/admin/tables/users`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    headers: adminHeaders(),
     body: JSON.stringify({ value: target.id, patch: { role: 'admin' } }),
   });
   assert.equal(promoted.status, 200);
@@ -615,7 +656,7 @@ test('admin file delete purges stored bytes and metadata', async () => {
 
   const del = await fetch(`${BASE}/api/admin/files/delete`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    headers: adminHeaders(),
     body: JSON.stringify({ names: [name] }),
   }).then(response => response.json());
   assert.deepEqual(del.failed, []);
@@ -626,7 +667,7 @@ test('admin file delete purges stored bytes and metadata', async () => {
 test('admin runtime switch can pause and resume uploads', async () => {
   const paused = await fetch(`${BASE}/api/admin/runtime`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    headers: adminHeaders(),
     body: JSON.stringify({ uploadsPaused: true }),
   }).then(response => response.json());
   assert.equal(paused.uploadsPaused, true);
@@ -636,7 +677,7 @@ test('admin runtime switch can pause and resume uploads', async () => {
 
   await fetch(`${BASE}/api/admin/runtime`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', cookie: adminCookie },
+    headers: adminHeaders(),
     body: JSON.stringify({ uploadsPaused: false }),
   });
   const resumed = await uploadFile([['reqtype', 'fileupload']], 'resumed.txt', 'ok');

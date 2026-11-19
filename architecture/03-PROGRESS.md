@@ -172,6 +172,12 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - The Vercel frontend serves `/admin` through a rewrite (not a redirect) so the host-only `catsess` cookie from a frontend login reaches the console; `/api/dashboard` now exposes `user.role` and the account nav shows an Admin link to signed-in admins.
 - Fixed a resumable-upload race: a fast retry of `/api/uploads/:id/complete` could get a 409 (staged bytes already consumed by the worker) instead of the queued job. The cached `.done` job is now returned before the byte-count check.
 - Tests: 61/61 passing, including admin auth gating, account-role access, hidden password hashes, byte-purging file deletion, the maintenance switch, and PostgREST search/filter shapes. Supabase adapter read checks passed on all live tables, including wrapped `or(...)` search and exact `and=(...)` filters. `ADMIN_TOKEN` was generated locally and set as a GitHub Actions secret; it is not committed.
+- Deep security hardening (OWASP Session Management / Authentication / CSRF Prevention / HTTP Headers cheat sheets, fetched directly because web search was unavailable):
+  - `src/adminSecurity.js` adds strict CSP (inline script/style allowed only by computed hash), `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, `no-store`, HSTS, Permissions-Policy, origin/Referer/Sec-Fetch-Site guard, optional IP/CIDR allow-list and a 250-event structured audit ring buffer with an in-console Audit tab.
+  - `src/adminAuth.js` moves to a `__Host-catadmin` cookie (Secure, HttpOnly, SameSite=Strict, Path=/) with 30-minute idle / 12-hour absolute lifetime, account-session binding, token verification in constant time, a session-bound signed CSRF token, optional TOTP step-up and shared brute-force throttling.
+  - `src/bruteForce.js` adds per-account + per-IP lockout with exponential backoff after the fourth failure; used by both admin token login and `/user/dologin.php`.
+  - `src/auth.js` rotates the account session on sign-in to prevent session fixation; `src/adminApi.js` rechecks `users.role` against the database on every request and blocks demotion/deletion of the last administrator.
+  - All admin writes now require `X-CSRF-Token`; the console fetches it from `/api/admin/status`. Added tests for CSRF rejection, bad-origin rejection and CSP hash correctness. 62/62 tests passing.
 
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.

@@ -41,7 +41,11 @@ Optional environment variables:
 | `UPSTASH_REDIS_REST_URL` | unset             | Enables Redis counters + CDN URL cache (card-free free tier) |
 | `UPSTASH_REDIS_REST_TOKEN` | unset           | Upstash REST token                                        |
 | `NODE_UPLOAD_SECRET` | unset                | Shared secret for `/internal/files` and node `/upload`    |
-| `ADMIN_TOKEN`        | unset                | Enables the `/admin` operator console                     |
+| `ADMIN_TOKEN`        | unset                | Enables token exchange for the `/admin` operator console  |
+| `ADMIN_ALLOWED_ORIGINS` | Vercel + API origins | Comma-separated HTTPS origins allowed to mutate admin state |
+| `ADMIN_ALLOWED_IPS`  | unset                | Optional comma-separated IPs/CIDRs allowed to reach `/admin` |
+| `ADMIN_OTP_SECRET`   | unset                | Optional Base32 TOTP secret for operator step-up MFA       |
+| `ADMIN_MFA_REQUIRED` | `0`                  | Set to `1` to require TOTP for all admin writes            |
 | `NODE_REGISTRY`      | unset                | Worker-side JSON list of alive node tunnels               |
 
 To start over, stop the server and delete the `data/` directory; it is
@@ -61,7 +65,7 @@ recreated (empty) on the next start.
 - `POST /internal/nodes/heartbeat` — node load heartbeat (requires `X-Catbox-Secret`)
 - `POST /internal/journal` — report a Discord write whose metadata commit failed
 - `POST /internal/journal/reconcile` — trigger a reconciliation pass manually
-- `GET /admin` — operator console (requires `ADMIN_TOKEN`; Vercel redirects here from its own `/admin`)
+- `GET /admin` — operator console (requires an admin account or `ADMIN_TOKEN`; Vercel rewrites here from its own `/admin`)
 - Browser pages are served at `/`, `/litterbox.php`, `/faq.php`, `/tools.php`, `/legal.php`, `/contact.php`, `/user/login.php`, `/user/register.php`, `/user/forgotpassword.php`, `/user/index.php`, `/user/albums.php`, and `/a/<short>`.
 - Account form actions remain available as plain-text POST endpoints: `/user/dologin.php`, `/user/doregister.php`, `/user/reset_password.php`; `GET /user/logout.php` ends a session.
 - The signed-in library uses `GET /api/dashboard` for the current account's files and albums, and `GET /api/albums/<short>` for public album contents.
@@ -70,9 +74,12 @@ recreated (empty) on the next start.
 
 Open `/admin` on the API origin. The console accepts either a normal signed-in
 account whose `users.role` is `admin`, or an `ADMIN_TOKEN` exchange that issues
-an HttpOnly, SameSite=Strict, signed 12-hour cookie. Admin accounts sign in at
-`/user/login.php` and return to `/admin`; no second token is needed. The token
-is never written to disk or localStorage. From there an operator can:
+a signed `__Host-` cookie (Secure, HttpOnly, SameSite=Strict, Path=/) with a
+30-minute idle timeout and a 12-hour absolute lifetime. The cookie is bound to
+the underlying account session, so signing out invalidates admin access too.
+Admin accounts sign in at `/user/login.php` and return to `/admin`; no second
+token is needed. The token is never written to disk or localStorage. From
+there an operator can:
 
 - review live counts, runtime config, Discord 429 rate and journal backlog;
 - browse and search every metadata table (users, sessions, files, albums,
@@ -83,9 +90,26 @@ is never written to disk or localStorage. From there an operator can:
 - edit safe fields (user role, file status, album text, job state, bot
   health/enabled, node draining, journal resolution);
 - requeue or fail stuck upload jobs, reconcile the orphan journal;
-- pause/resume all uploads for maintenance and run Supabase/edge/bot health checks.
+- pause/resume all uploads for maintenance and run Supabase/edge/bot health checks;
+- review the in-console audit log of recent operator actions.
 
-The Vercel frontend redirects `/admin` to the API origin so the admin cookie is
+Security layers (based on the OWASP Session Management, Authentication, CSRF
+Prevention and HTTP Headers cheat sheets):
+
+- every admin mutation requires a session-bound, signed double-submit CSRF token
+  in `X-CSRF-Token`, plus a `Sec-Fetch-Site` / `Origin` / `Referer` check;
+- a strict Content-Security-Policy (no external scripts, frames or plugins),
+  `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, `no-store` and HSTS are set
+  on the console and every admin API response;
+- login is throttled per account and per IP with exponential backoff, and the
+  account session is rotated on sign-in to prevent session fixation;
+- admin role is rechecked against the database on every request, and the last
+  administrator cannot be demoted or deleted;
+- optional TOTP step-up via `ADMIN_OTP_SECRET` (set `ADMIN_MFA_REQUIRED=1` to
+  enforce it), and an optional IP/CIDR allow-list via `ADMIN_ALLOWED_IPS`
+  (set `TRUST_PROXY=1` behind Vercel/Cloudflare).
+
+The Vercel frontend rewrites `/admin` to the API origin so the admin cookie is
 same-origin. Session tokens are excluded from the public metrics endpoint, and
 password hashes are stripped from all admin responses.
 
