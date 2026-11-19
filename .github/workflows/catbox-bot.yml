@@ -203,18 +203,27 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
+          CATBOX_CHANNEL_2: ${{ vars.CATBOX_CHANNEL_2 }}
+          CATBOX_CHANNEL_3: ${{ vars.CATBOX_CHANNEL_3 }}
+          CATBOX_CHANNEL_4: ${{ vars.CATBOX_CHANNEL_4 }}
+          CATBOX_CHANNEL_5: ${{ vars.CATBOX_CHANNEL_5 }}
         run: |
-          # config.parseBots() consumes DISCORD_BOTS as a JSON array. The shared
-          # production channel comes from the existing secret, so a channel move
-          # only needs one secret changed. primary stays first because the
-          # metadata mirror uses bots[0].
+          # config.parseBots() consumes DISCORD_BOTS as a JSON array. primary
+          # stays on the original channel because the metadata mirror reads
+          # bots[0]; bots 2-5 use dedicated private channels so a per-channel
+          # Discord bucket cannot become a single point of contention.
           $channel = $env:DISCORD_CHANNEL_ID
+          # Fall back to the shared channel if a per-bot variable is ever unset.
+          if (-not $env:CATBOX_CHANNEL_2) { $env:CATBOX_CHANNEL_2 = $channel }
+          if (-not $env:CATBOX_CHANNEL_3) { $env:CATBOX_CHANNEL_3 = $channel }
+          if (-not $env:CATBOX_CHANNEL_4) { $env:CATBOX_CHANNEL_4 = $channel }
+          if (-not $env:CATBOX_CHANNEL_5) { $env:CATBOX_CHANNEL_5 = $channel }
           $fleet = @(
             @{ id = 'primary'; token = $env:DISCORD_BOT_TOKEN; channelId = $channel },
-            @{ id = 'bot2'; token = $env:DISCORD_BOT_2_TOKEN; channelId = $channel },
-            @{ id = 'bot3'; token = $env:DISCORD_BOT_3_TOKEN; channelId = $channel },
-            @{ id = 'bot4'; token = $env:DISCORD_BOT_4_TOKEN; channelId = $channel },
-            @{ id = 'bot5'; token = $env:DISCORD_BOT_5_TOKEN; channelId = $channel }
+            @{ id = 'bot2'; token = $env:DISCORD_BOT_2_TOKEN; channelId = $env:CATBOX_CHANNEL_2 },
+            @{ id = 'bot3'; token = $env:DISCORD_BOT_3_TOKEN; channelId = $env:CATBOX_CHANNEL_3 },
+            @{ id = 'bot4'; token = $env:DISCORD_BOT_4_TOKEN; channelId = $env:CATBOX_CHANNEL_4 },
+            @{ id = 'bot5'; token = $env:DISCORD_BOT_5_TOKEN; channelId = $env:CATBOX_CHANNEL_5 }
           )
           $botsJson = $fleet | ConvertTo-Json -Compress -Depth 5
 
@@ -350,16 +359,32 @@ jobs:
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           MAX_FILE_SIZE: 20mb
           UPLOAD_MAX_PER_MIN: ${{ vars.UPLOAD_MAX_PER_MIN || '40' }}
+          DISCORD_REQUEST_CONCURRENCY: ${{ vars.DISCORD_REQUEST_CONCURRENCY || '4' }}
+          DISCORD_MAX_CONCURRENCY: ${{ vars.DISCORD_MAX_CONCURRENCY || '8' }}
           TRUST_PROXY: '1'
         run: |
           $serverLog = "$env:RUNNER_TEMP\server.log"
           $serverErr = "$env:RUNNER_TEMP\server.err"
-          $tunnelLog = "$env:RUNNER_TEMP\tunnel.log"
-          $tunnelErr = "$env:RUNNER_TEMP\tunnel.err"
           Set-Content -Path $serverLog -Value ''
           Set-Content -Path $serverErr -Value ''
-          Set-Content -Path $tunnelLog -Value ''
-          Set-Content -Path $tunnelErr -Value ''
+          # Three connectors on the same tunnel multiply concurrent-stream
+          # capacity. One connector saturated at ~80 simultaneous 20 MiB uploads.
+          # This tunnel serves only api.mew-pocket.de5.net, so all connectors
+          # have identical ingress and Cloudflare load-balances across them.
+          $tunnelCount = 3
+          $tunnelProcs = @()
+          $tunnelLogs = @()
+          $tunnelErrs = @()
+          $tunnelLines = @()
+          for ($i = 1; $i -le $tunnelCount; $i++) {
+            $tLog = "$env:RUNNER_TEMP\tunnel$i.log"
+            $tErr = "$env:RUNNER_TEMP\tunnel$i.err"
+            Set-Content -Path $tLog -Value ''
+            Set-Content -Path $tErr -Value ''
+            $tunnelLogs += $tLog
+            $tunnelErrs += $tErr
+            $tunnelLines += 0
+          }
 
           # The app reads process.env directly (no dotenv loader). Set the
           # non-secret values here; secrets arrive via the step env block.
@@ -374,9 +399,12 @@ jobs:
           $serverProc = Start-Process -FilePath $nodeExe -ArgumentList 'server.js' `
             -WorkingDirectory $env:GITHUB_WORKSPACE -PassThru `
             -RedirectStandardOutput $serverLog -RedirectStandardError $serverErr
-          $tunnelProc = Start-Process -FilePath $cloudflared `
-            -ArgumentList @('tunnel', '--no-autoupdate', 'run', '--token', $env:CF_TUNNEL_TOKEN) `
-            -PassThru -RedirectStandardOutput $tunnelLog -RedirectStandardError $tunnelErr
+          for ($i = 0; $i -lt $tunnelCount; $i++) {
+            $tunnelProcs += Start-Process -FilePath $cloudflared `
+              -ArgumentList @('tunnel', '--no-autoupdate', 'run', '--token', $env:CF_TUNNEL_TOKEN) `
+              -PassThru -RedirectStandardOutput $tunnelLogs[$i] -RedirectStandardError $tunnelErrs[$i]
+          }
+          Write-Host "Started $($tunnelProcs.Count) cloudflared connectors for $env:PUBLIC_BASE_URL"
 
           try {
             # Readiness: local control plane AND the public tunnel URL.
@@ -388,10 +416,12 @@ jobs:
                 Get-Content $serverLog, $serverErr -Tail 100 -ErrorAction SilentlyContinue
                 exit 1
               }
-              if ($tunnelProc.HasExited) {
-                Write-Error "::error::cloudflared exited before becoming ready"
-                Get-Content $tunnelLog, $tunnelErr -Tail 100 -ErrorAction SilentlyContinue
-                exit 1
+              for ($i = 0; $i -lt $tunnelCount; $i++) {
+                if ($tunnelProcs[$i].HasExited) {
+                  Write-Error "::error::cloudflared connector $($i + 1) exited before becoming ready"
+                  Get-Content $tunnelLogs[$i], $tunnelErrs[$i] -Tail 100 -ErrorAction SilentlyContinue
+                  exit 1
+                }
               }
               try {
                 $local = Invoke-WebRequest -Uri 'http://localhost:3000/api/config' -UseBasicParsing -TimeoutSec 5 -SkipHttpErrorCheck
@@ -406,7 +436,9 @@ jobs:
             if (-not $ready) {
               Write-Error '::error::Control plane did not become publicly ready in 180s'
               Get-Content $serverLog, $serverErr -Tail 100 -ErrorAction SilentlyContinue
-              Get-Content $tunnelLog, $tunnelErr -Tail 100 -ErrorAction SilentlyContinue
+              for ($i = 0; $i -lt $tunnelCount; $i++) {
+                Get-Content $tunnelLogs[$i], $tunnelErrs[$i] -Tail 100 -ErrorAction SilentlyContinue
+              }
               exit 1
             }
 
@@ -426,17 +458,18 @@ jobs:
             # never reaches SESSION_COMPLETE and would count as a failed link.
             $end = (Get-Date).AddMinutes(330)
             $serverLines = 0
-            $tunnelLines = 0
             while ((Get-Date) -lt $end) {
               if ($serverProc.HasExited) {
                 Write-Error "::error::Control plane exited unexpectedly (exit code $($serverProc.ExitCode))"
                 Get-Content $serverLog, $serverErr -Tail 200 -ErrorAction SilentlyContinue
                 exit 1
               }
-              if ($tunnelProc.HasExited) {
-                Write-Error "::error::cloudflared exited unexpectedly (exit code $($tunnelProc.ExitCode))"
-                Get-Content $tunnelLog, $tunnelErr -Tail 200 -ErrorAction SilentlyContinue
-                exit 1
+              for ($i = 0; $i -lt $tunnelCount; $i++) {
+                if ($tunnelProcs[$i].HasExited) {
+                  Write-Error "::error::cloudflared connector $($i + 1) exited unexpectedly (exit code $($tunnelProcs[$i].ExitCode))"
+                  Get-Content $tunnelLogs[$i], $tunnelErrs[$i] -Tail 200 -ErrorAction SilentlyContinue
+                  exit 1
+                }
               }
 
               $all = @(Get-Content $serverLog -ErrorAction SilentlyContinue)
@@ -444,10 +477,12 @@ jobs:
                 $all[$serverLines..($all.Count - 1)] | ForEach-Object { Write-Host $_ }
                 $serverLines = $all.Count
               }
-              $all = @(Get-Content $tunnelLog -ErrorAction SilentlyContinue)
-              if ($all.Count -gt $tunnelLines) {
-                $all[$tunnelLines..($all.Count - 1)] | ForEach-Object { Write-Host $_ }
-                $tunnelLines = $all.Count
+              for ($i = 0; $i -lt $tunnelCount; $i++) {
+                $all = @(Get-Content $tunnelLogs[$i] -ErrorAction SilentlyContinue)
+                if ($all.Count -gt $tunnelLines[$i]) {
+                  $all[$tunnelLines[$i]..($all.Count - 1)] | ForEach-Object { Write-Host "[tunnel $($i + 1)] $_" }
+                  $tunnelLines[$i] = $all.Count
+                }
               }
 
               $code = 0
@@ -461,7 +496,9 @@ jobs:
 
             'SESSION_COMPLETE=true' | Out-File -FilePath $env:GITHUB_ENV -Append
           } finally {
-            Stop-Process -Id $tunnelProc.Id -Force -ErrorAction SilentlyContinue
+            foreach ($proc in $tunnelProcs) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
             Stop-Process -Id $serverProc.Id -Force -ErrorAction SilentlyContinue
           }
 
@@ -473,8 +510,8 @@ jobs:
           path: |
             ${{ runner.temp }}/server.log
             ${{ runner.temp }}/server.err
-            ${{ runner.temp }}/tunnel.log
-            ${{ runner.temp }}/tunnel.err
+            ${{ runner.temp }}/tunnel*.log
+            ${{ runner.temp }}/tunnel*.err
           retention-days: 3
           if-no-files-found: ignore
 

@@ -60,6 +60,29 @@ test('Bucket obeys remaining/reset headers and 429 blocks', async () => {
   next();
 });
 
+test('Bucket halves concurrency on a block and grows back with headroom', () => {
+  const bucket = new Bucket(4, 8);
+  bucket.block(10);
+  assert.equal(bucket.concurrency, 2);
+  assert.equal(bucket.stats().rateLimited, 1);
+  assert.equal(bucket.stats().adjustments, 1);
+  const healthy = new Headers({ 'x-ratelimit-remaining': '9' });
+  for (let i = 0; i < 5; i++) bucket.update(healthy);
+  assert.equal(bucket.concurrency, 3);
+  for (let i = 0; i < 30; i++) bucket.update(healthy);
+  assert.equal(bucket.concurrency, 8, 'growth stops at the configured ceiling');
+});
+
+test('stats expose per-bucket concurrency and 429 counters', () => {
+  const storage = new DiscordStorage(config);
+  storage.bucket('bot:bot-1').block(10);
+  const stats = storage.stats();
+  assert.equal(stats.buckets.count, 1);
+  assert.equal(stats.buckets.rateLimited, 1);
+  assert.equal(stats.buckets.concurrency, 2);
+  assert.ok(stats.buckets.adjustments >= 1);
+});
+
 test('expiryFromUrl reads the hex ex parameter', () => {
   const url = 'https://cdn.discordapp.com/attachments/1/2/x.txt?ex=65abc123&is=65abc456&hm=deadbeef';
   assert.equal(expiryFromUrl(url), parseInt('65abc123', 16) * 1000);

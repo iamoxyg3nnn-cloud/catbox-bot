@@ -92,6 +92,9 @@ const config = {
     // 429 handler remain the hard cap; this only lets a saturated runner keep
     // several uploads in flight instead of fully serialising every request.
     requestConcurrency: Math.max(1, parseInt(process.env.DISCORD_REQUEST_CONCURRENCY || '4', 10)),
+    // Adaptive ceiling: a bucket halves its concurrency on a 429 and grows
+    // back one request at a time while X-RateLimit-Remaining shows headroom.
+    maxConcurrency: Math.max(1, parseInt(process.env.DISCORD_MAX_CONCURRENCY || '8', 10)),
     bots: parseBots(),
   },
 

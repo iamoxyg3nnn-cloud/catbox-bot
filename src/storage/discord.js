@@ -23,13 +23,47 @@ const HEALTH_RETRY_MAX_MS = 60 * 60_000;
 // be in flight, while remaining/reset headers and the 429 handler remain the
 // hard ceiling on real Discord pressure.
 class Bucket {
-  constructor(concurrency = 4) {
-    this.concurrency = Math.max(1, concurrency);
+  constructor(concurrency = 4, maxConcurrency = 8) {
+    this.baseConcurrency = Math.max(1, concurrency);
+    this.maxConcurrency = Math.max(this.baseConcurrency, maxConcurrency);
+    this.concurrency = this.baseConcurrency;
     this.remaining = 1;
     this.resetAt = 0;
     this.blockedUntil = 0;
     this.inFlight = 0;
     this.waiters = [];
+    // Observability + adaptive tuning state.
+    this.rateLimited = 0;
+    this.adjustments = 0;
+    this.goodRequests = 0;
+  }
+
+  // Halve on pressure, grow one step after a run of healthy responses.
+  reduceConcurrency() {
+    const next = Math.max(1, Math.floor(this.concurrency / 2));
+    if (next !== this.concurrency) {
+      this.concurrency = next;
+      this.adjustments += 1;
+    }
+  }
+
+  growConcurrency() {
+    this.goodRequests += 1;
+    if (this.goodRequests < 5 || this.concurrency >= this.maxConcurrency) return;
+    this.concurrency += 1;
+    this.adjustments += 1;
+    this.goodRequests = 0;
+    // A freed slot can immediately serve a queued request.
+    const next = this.waiters.shift();
+    if (next) next();
+  }
+
+  stats() {
+    return {
+      concurrency: this.concurrency,
+      rateLimited: this.rateLimited,
+      adjustments: this.adjustments,
+    };
   }
 
   async acquire() {
@@ -63,6 +97,9 @@ class Bucket {
   update(headers) {
     const remaining = Number(headers.get('x-ratelimit-remaining'));
     const reset = Number(headers.get('x-ratelimit-reset'));
+    // Plenty of headroom means the bucket can safely try one more request.
+    if (Number.isFinite(remaining) && remaining >= 2) this.growConcurrency();
+    else if (Number.isFinite(remaining) && remaining <= 0) this.goodRequests = 0;
     if (Number.isFinite(reset)) {
       const resetMs = reset * 1000;
       if (resetMs > this.resetAt) {
@@ -79,6 +116,9 @@ class Bucket {
   }
 
   block(ms) {
+    this.rateLimited += 1;
+    this.goodRequests = 0;
+    this.reduceConcurrency();
     this.blockedUntil = Math.max(this.blockedUntil, Date.now() + ms);
     this.remaining = 0;
   }
@@ -105,12 +145,14 @@ class DiscordStorage {
     this.cursor = 0;
     this.buckets = new Map();
     this.requestConcurrency = this.config.discord.requestConcurrency || 4;
+    this.maxConcurrency = this.config.discord.maxConcurrency || 8;
     // Cumulative counters exported through /api/metrics. No tokens or paths.
     this.counters = { requests: 0, rateLimited: 0, retries: 0, lastRateLimitAt: null };
   }
 
   stats() {
     const { requests, rateLimited, retries, lastRateLimitAt } = this.counters;
+    const buckets = Array.from(this.buckets.values()).map(b => b.stats());
     return {
       transport: 'discord',
       requests,
@@ -118,11 +160,22 @@ class DiscordStorage {
       retries,
       rateLimitPct: requests ? +(rateLimited / requests * 100).toFixed(2) : 0,
       lastRateLimitAt,
+      // Per-bucket concurrency and 429 counts make rate-limit pressure visible
+      // without exposing tokens, paths or user data.
+      buckets: {
+        count: buckets.length,
+        concurrency: Math.max(0, ...buckets.map(b => b.concurrency)),
+        minConcurrency: buckets.length ? Math.min(...buckets.map(b => b.concurrency)) : 0,
+        rateLimited: buckets.reduce((sum, b) => sum + b.rateLimited, 0),
+        adjustments: buckets.reduce((sum, b) => sum + b.adjustments, 0),
+      },
     };
   }
 
   bucket(key) {
-    if (!this.buckets.has(key)) this.buckets.set(key, new Bucket(this.requestConcurrency));
+    if (!this.buckets.has(key)) {
+      this.buckets.set(key, new Bucket(this.requestConcurrency, this.maxConcurrency));
+    }
     return this.buckets.get(key);
   }
 
