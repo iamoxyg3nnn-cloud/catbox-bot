@@ -195,11 +195,29 @@ jobs:
         env:
           PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_BOT_2_TOKEN: ${{ secrets.DISCORD_BOT_2_TOKEN }}
+          DISCORD_BOT_3_TOKEN: ${{ secrets.DISCORD_BOT_3_TOKEN }}
+          DISCORD_BOT_4_TOKEN: ${{ secrets.DISCORD_BOT_4_TOKEN }}
+          DISCORD_BOT_5_TOKEN: ${{ secrets.DISCORD_BOT_5_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
         run: |
+          # config.parseBots() consumes DISCORD_BOTS as a JSON array. The shared
+          # production channel comes from the existing secret, so a channel move
+          # only needs one secret changed. primary stays first because the
+          # metadata mirror uses bots[0].
+          $channel = $env:DISCORD_CHANNEL_ID
+          $fleet = @(
+            @{ id = 'primary'; token = $env:DISCORD_BOT_TOKEN; channelId = $channel },
+            @{ id = 'bot2'; token = $env:DISCORD_BOT_2_TOKEN; channelId = $channel },
+            @{ id = 'bot3'; token = $env:DISCORD_BOT_3_TOKEN; channelId = $channel },
+            @{ id = 'bot4'; token = $env:DISCORD_BOT_4_TOKEN; channelId = $channel },
+            @{ id = 'bot5'; token = $env:DISCORD_BOT_5_TOKEN; channelId = $channel }
+          )
+          $botsJson = $fleet | ConvertTo-Json -Compress -Depth 5
+
           @"
           PORT=3000
           PUBLIC_BASE_URL=$env:PUBLIC_BASE_URL
@@ -209,13 +227,17 @@ jobs:
           MAX_FILE_SIZE=20mb
           FILE_DELIVERY=proxy
           DISCORD_BOT_ID=primary
-          DISCORD_BOT_TOKEN=$env:DISCORD_BOT_TOKEN
+          DISCORD_BOTS=$botsJson
           DISCORD_CHANNEL_ID=$env:DISCORD_CHANNEL_ID
           SUPABASE_URL=$env:SUPABASE_URL
           SUPABASE_SERVICE_ROLE_KEY=$env:SUPABASE_SERVICE_ROLE_KEY
           NODE_UPLOAD_SECRET=$env:NODE_UPLOAD_SECRET
           "@ | Set-Content -Path .env -Encoding utf8
-          Write-Host 'Runtime configuration written (tokens are masked in logs).'
+
+          # The app reads process.env directly, so export the fleet to later
+          # steps (including the long-running control plane) via GITHUB_ENV.
+          "DISCORD_BOTS=$botsJson" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Runtime configuration written for $($fleet.Count) Discord bots (tokens are masked in logs)."
 
       - name: Require durable metadata config
         shell: pwsh
@@ -223,6 +245,10 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_BOT_2_TOKEN: ${{ secrets.DISCORD_BOT_2_TOKEN }}
+          DISCORD_BOT_3_TOKEN: ${{ secrets.DISCORD_BOT_3_TOKEN }}
+          DISCORD_BOT_4_TOKEN: ${{ secrets.DISCORD_BOT_4_TOKEN }}
+          DISCORD_BOT_5_TOKEN: ${{ secrets.DISCORD_BOT_5_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
         run: |
@@ -231,7 +257,7 @@ jobs:
           # metadata write disappears at the next session, which looks exactly
           # like a database flush. Fail loudly instead.
           $missing = @()
-          foreach ($name in 'SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','DISCORD_BOT_TOKEN','DISCORD_CHANNEL_ID','NODE_UPLOAD_SECRET') {
+          foreach ($name in 'SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','DISCORD_BOT_TOKEN','DISCORD_BOT_2_TOKEN','DISCORD_BOT_3_TOKEN','DISCORD_BOT_4_TOKEN','DISCORD_BOT_5_TOKEN','DISCORD_CHANNEL_ID','NODE_UPLOAD_SECRET') {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
               Write-Error "::error::$name is empty - refusing to start on an ephemeral runner"
               $missing += $name
@@ -282,20 +308,25 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
         run: |
-          $bot = @(@{
-            bot_id = 'primary'
-            channel_id = $env:DISCORD_CHANNEL_ID
-            enabled = $true
-            health = 'unknown'
+          # Keep the Supabase registry in sync with the configured fleet so the
+          # admin console shows every bot actually used for uploads.
+          $fleet = @($env:DISCORD_BOTS | ConvertFrom-Json)
+          $rows = @($fleet | ForEach-Object {
+            @{
+              bot_id = $_.id
+              channel_id = $_.channelId
+              enabled = $true
+              health = 'unknown'
+            }
           })
-          $body = $bot | ConvertTo-Json -Compress -Depth 5
+          $body = $rows | ConvertTo-Json -Compress -Depth 5 -AsArray
           Invoke-RestMethod -Method Post -Uri "$env:SUPABASE_URL/rest/v1/discord_bots" `
             -Headers @{
               apikey = $env:SUPABASE_SERVICE_ROLE_KEY
               Authorization = "Bearer $env:SUPABASE_SERVICE_ROLE_KEY"
               Prefer = 'return=minimal,resolution=merge-duplicates'
             } -ContentType 'application/json' -Body $body | Out-Null
-          Write-Host 'Discord bot registry seeded.'
+          Write-Host "Discord bot registry seeded with $($rows.Count) bots."
 
       - name: Install cloudflared
         shell: pwsh

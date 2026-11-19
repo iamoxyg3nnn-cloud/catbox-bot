@@ -186,6 +186,11 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Added `STAGING_DIR` in `src/config.js`; production sets `STAGING_DIR=D:\catbox_staging`, so in-flight bodies live on the runner's D: drive instead of `./data/tmp`. `commitUpload()` still unlinks the staged file only after Discord confirms and Supabase records the metadata; a failed Discord upload keeps the local body for the job retry.
 - Validated the rewritten workflow with a YAML parser (15 steps, `windows-latest`) and parsed all 11 inline PowerShell blocks with the PowerShell parser - no syntax errors.
 
+## Discord bot fleet (5 bots)
+- Stored four additional valid bot tokens as GitHub secrets `DISCORD_BOT_2_TOKEN` … `DISCORD_BOT_5_TOKEN` (verified via Discord `/users/@me`: `mewpocket - 2` … `mewpocket - 5`); no token is committed or printed.
+- The workflow now builds `DISCORD_BOTS` (primary first, then bot2..bot5) from those secrets plus the existing `DISCORD_CHANNEL_ID`, exports it through `GITHUB_ENV`, requires all five secrets to be present, and seeds all five rows into Supabase `discord_bots`. `parseBots()` already supports this JSON array and the storage layer round-robins while retiring bots that return 401/403.
+- Discord-side check: only `primary` and `mewpocket - 2` are members of the configured guild; `mewpocket - 3/4/5` are in no guild, and none of the new bots could read the configured upload channel. The user must invite them and grant the required channel permissions in Discord - bot tokens cannot self-grant Administrator.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `STAGING_DIR` (`D:\catbox_staging` in production) and `data/tmp` locally are transient.

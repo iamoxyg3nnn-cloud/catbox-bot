@@ -219,7 +219,13 @@ a `catbox-session` concurrency chain; there is no cron schedule. Each session:
   storage); RDP failure never stops the control plane;
 - starts `node server.js` and a named Cloudflare tunnel, waits for both the
   local and public `/api/config` to answer, then holds the session for 330
-  minutes before queueing a healthy successor.
+  minutes before queueing a healthy successor;
+- builds `DISCORD_BOTS` from `DISCORD_BOT_TOKEN` and `DISCORD_BOT_2_TOKEN` …
+  `DISCORD_BOT_5_TOKEN`, all posting to `DISCORD_CHANNEL_ID`. The storage layer
+  rotates through the fleet and drops a bot from rotation after a 401/403, and
+  the same fleet is seeded into the `discord_bots` table for the admin console.
+  Every bot must be invited to the Discord server and allowed to post, read and
+  delete in that channel; bot tokens cannot grant themselves those permissions.
 
 Supabase + Redis remain in the separate, unmodified `mew-pocket/Supabase-Actions`
 repository with their own tunnel. This repository owns only the control plane.
