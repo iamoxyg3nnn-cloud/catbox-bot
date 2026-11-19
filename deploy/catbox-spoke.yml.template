@@ -156,8 +156,25 @@ jobs:
       - name: Start spoke and keep alive
         shell: pwsh
         env:
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
           CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
         run: |
+          # The app reads process.env directly (no dotenv loader). Set the
+          # non-secret values here; secrets arrive via this step's env block.
+          $env:PORT = '3000'
+          $env:NODE_MODE = 'node'
+          $env:NODE_ID = '__NODE_ID__'
+          $env:STAGING_DIR = 'D:\catbox_staging'
+          $env:DATA_DIR = '.\data'
+          $env:FILE_DELIVERY = 'proxy'
+          $env:DISCORD_BOT_ID = '__NODE_ID__'
+          $env:MAX_FILE_SIZE = '20mb'
+          $env:TRUST_PROXY = '1'
+
           $tunnelLog = "$env:RUNNER_TEMP\tunnel.log"
           $tunnelErr = "$env:RUNNER_TEMP\tunnel.err"
           $serverLog = "$env:RUNNER_TEMP\server.log"
