@@ -220,6 +220,16 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
 - Verified live: all five spoke workflows run with `staging=success` and `rdp=success`; spoke-1's log showed `D: free=147GB` and a Tailscale RDP IP; six consecutive hub uploads landed on all five bots (`bot3, bot4, bot5, primary, bot2, bot3`), all `ready`.
 - D: bytes remain transient: staged files are deleted only after Discord confirms the attachment and Supabase records the metadata. RDP/Tailscale do not change that lifecycle.
 
+## Concurrent load testing and hardening (2026-11-19)
+- Added reproducible `scripts/loadtest-concurrent.js` (N accounts, N × 20 MiB simultaneous uploads, node monitoring, Supabase metadata verification) and `scripts/loadtest-cleanup.js` (deletes test files via the public `deletefiles` API so Discord messages and metadata rows both go away).
+- Baseline 20/20 × 20 MiB succeeded but p50 was ~40s. Diagnosis: `Bucket` fully serialised every Discord request even with zero 429s; four uploads to one spoke took ~4× a single upload. Fixed with bounded concurrency (`DISCORD_REQUEST_CONCURRENCY`) plus adaptive tuning — a bucket halves concurrency on a 429 and grows one step at a time while `X-RateLimit-Remaining` shows headroom (`src/storage/discord.js`, `src/config.js`).
+- Spoke heartbeats now publish real in-flight upload counts; `startHeartbeat(stats)` accepts a stats callback and `server.js` tracks active uploads. `pickNode()` already breaks zero-load ties round-robin, so all five spokes carry traffic evenly.
+- Per-IP upload throttle was hardcoded at 40/min, which made any single-source scale test impossible. It is now `UPLOAD_MAX_PER_MIN` (production default unchanged at 40) wired as a repo variable so a controlled test can raise it without a code change.
+- Every upload previously did its own live `listNodes()` Supabase read; 80 concurrent uploads meant 80 concurrent reads and starved `/api/nodes` and `/api/metrics`. Added a 3s node-registry snapshot (`getNodeRegistry()`) with stale-on-error fallback; heartbeats invalidate it. Control-plane endpoints now stay responsive during bursts.
+- **Results (20 MiB each):** 5/5, 20/20, 40/40 and 80/80 all reached `ready` with zero 429s, zero staging leaks and even bot distribution. `npm test` 73/73 green.
+- First 150-user run: 78 succeeded, 72 failed at the connection layer (`fetch failed`) with one Cloudflare `524`; all 78 uploaded files were `ready`. Root cause was tunnel/concurrency saturation, not Discord rate limiting. Mitigations deployed: three cloudflared connectors on the dedicated API tunnel (instead of one) and per-bot private Discord channels for bots 2–5 (primary keeps the original channel so the metadata mirror is unaffected). All five bots verified uploading to their channels; a 150-user re-test is in progress.
+- Free proxy harvesting was evaluated and rejected: it would route bot tokens through untrusted servers, invite Discord bans, add latency to an already bandwidth-bound path, and solve a problem (429s) that has not appeared in any test.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
 - No production code writes permanent bytes to local disk. `STAGING_DIR` (`D:\catbox_staging` in production) and `data/tmp` locally are transient.
