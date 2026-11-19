@@ -8,9 +8,16 @@
   // Upload ceiling mirrors the server's MAX_FILE_SIZE (default 20 MiB). The
   // server remains authoritative; this only gives the browser early feedback.
   let MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+  let BATCH_CONCURRENCY = 5;
+  let BATCH_ADAPTIVE = false;
   fetch('/api/config', { signal: AbortSignal.timeout(5000) })
     .then(response => response.ok ? response.json() : null)
-    .then(cfg => { if (cfg && Number(cfg.maxFileSize) > 0) MAX_UPLOAD_BYTES = Number(cfg.maxFileSize); })
+    .then(cfg => {
+      if (!cfg) return;
+      if (Number(cfg.maxFileSize) > 0) MAX_UPLOAD_BYTES = Number(cfg.maxFileSize);
+      if (Number(cfg.batchConcurrency) > 0) BATCH_CONCURRENCY = Math.min(16, Number(cfg.batchConcurrency));
+      BATCH_ADAPTIVE = Boolean(cfg.adaptiveBatches);
+    })
     .catch(() => {});
 
   // Short, resumable chunk uploader. Each request is at most 4 MiB and has its
@@ -21,31 +28,107 @@
     if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, AbortSignal.timeout(ms)]);
     return signal;
   }
-  async function chunkedUpload(file, { userhash, time, signal, onProgress }) {
-    const init = await fetch('/api/uploads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        originalName: file.name,
-        mime: file.type || 'application/octet-stream',
-        size: file.size,
-        userhash: userhash || undefined,
-        time: time || undefined,
-      }),
-      signal: withDeadline(signal, 15_000),
-    });
-    if (!init.ok) throw new Error((await init.text()).trim() || 'Could not start the upload.');
-    const session = await init.json();
+  // Attach HTTP status / Retry-After so the queue can tell a 429 from a 413.
+  function uploadError(message, response) {
+    const error = new Error(message);
+    if (response) {
+      error.status = response.status;
+      const header = response.headers.get('Retry-After');
+      const seconds = header && /^\d+$/.test(header.trim()) ? Number(header) : NaN;
+      error.retryAfterMs = Number.isFinite(seconds) ? seconds * 1000 : 0;
+    }
+    return error;
+  }
+  const retryableStatus = status => !status || status === 408 || status === 409 || status === 429 || status >= 500;
+
+  // Resumable sessions are signed capabilities, not secrets belonging to the
+  // site. Keep only the minimum needed to match a reselected file, with a TTL.
+  const RESUME_KEY = 'mewpocket.uploads.v1';
+  const RESUME_TTL = 30 * 60 * 1000;
+  function readSessions() {
+    try {
+      const list = JSON.parse(localStorage.getItem(RESUME_KEY) || '[]');
+      return Array.isArray(list) ? list.filter(s => s && s.createdAt > Date.now() - RESUME_TTL) : [];
+    } catch { return []; }
+  }
+  function writeSessions(list) {
+    try { localStorage.setItem(RESUME_KEY, JSON.stringify(list.slice(0, 200))); } catch { /* private mode */ }
+  }
+  const fileKey = file => `${file.name}|${file.size || 0}|${file.lastModified || 0}`;
+  function findSession(file) {
+    const key = fileKey(file);
+    return readSessions().find(s => s.key === key) || null;
+  }
+  function saveSession(file, session) {
+    const key = fileKey(file);
+    const list = readSessions().filter(s => s.key !== key);
+    list.unshift({ key, uploadId: session.uploadId, token: session.token, createdAt: Date.now() });
+    writeSessions(list);
+  }
+  function clearSession(file) {
+    writeSessions(readSessions().filter(s => s.key !== fileKey(file)));
+  }
+  function showResumeHint() {
+    const saved = readSessions();
+    if (!saved.length || document.querySelector('[data-resume-hint]')) return;
+    const hint = document.createElement('div');
+    hint.className = 'resume-hint';
+    hint.dataset.resumeHint = 'true';
+    hint.setAttribute('role', 'status');
+    const text = document.createElement('span');
+    text.textContent = `${saved.length} unfinished upload${saved.length === 1 ? '' : 's'}. Select the same file${saved.length === 1 ? '' : 's'} to continue from where you left off.`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'button button-quiet button-small';
+    button.textContent = 'Choose files';
+    button.addEventListener('click', () => ($('#file-input') || $('#library-file-input'))?.click());
+    hint.append(text, button);
+    document.body.append(hint);
+    setTimeout(() => hint.remove(), 15000);
+  }
+  async function sha256File(file) {
+    if (!globalThis.crypto?.subtle || !file.arrayBuffer) return null;
+    try {
+      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch { return null; }
+  }
+
+  async function chunkedUpload(file, { userhash, time, sha256, signal, onProgress, session: existing } = {}) {
+    let session = existing;
+    if (!session) {
+      const init = await fetch('/api/uploads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          originalName: file.name,
+          mime: file.type || 'application/octet-stream',
+          size: file.size,
+          userhash: userhash || undefined,
+          time: time || undefined,
+          sha256: sha256 || undefined,
+        }),
+        signal: withDeadline(signal, 15_000),
+      });
+      if (!init.ok) throw uploadError((await init.text()).trim() || 'Could not start the upload.', init);
+      session = await init.json();
+    }
+    // The server recognised these bytes and returned the existing link. No
+    // chunks (and no Discord write) are needed.
+    if (session.url) return { session, job: null };
+    // Each successful PUT returns the new offset, so only a resumed session
+    // needs a status probe. Removing the per-chunk GET cuts ~500 requests from
+    // a 100 × 20 MiB batch.
     let received = 0;
-    while (received < session.size) {
+    if (existing) {
       const probe = await fetch(`/api/uploads/${session.uploadId}`, {
         headers: { 'X-Upload-Token': session.token },
         signal: withDeadline(signal, 15_000),
       });
-      if (!probe.ok) throw new Error('This upload session expired. Please try again.');
-      received = (await probe.json()).received;
-      if (received >= session.size) break;
-
+      if (!probe.ok) throw uploadError('This upload session expired. Please try again.', probe);
+      received = (await probe.json()).received || 0;
+    }
+    while (received < session.size) {
       const end = Math.min(received + (session.chunkSize || 4 * 1024 * 1024), session.size);
       const chunk = file.slice(received, end);
       let advanced = false;
@@ -68,13 +151,13 @@
             advanced = true;
             break;
           }
-          if (!response.ok) throw new Error((await response.text()).trim() || 'A chunk could not be uploaded.');
+          if (!response.ok) throw uploadError((await response.text()).trim() || 'A chunk could not be uploaded.', response);
           received = (await response.json()).received;
           advanced = true;
         } catch (error) {
-          if (signal.aborted) throw error;
+          if (signal.aborted || !retryableStatus(error.status)) throw error;
           if (attempt === 2) throw new Error('The upload stalled. Check your connection and try again.');
-          await sleep(400 * 2 ** attempt);
+          await sleep(Math.max(400 * 2 ** attempt, Number(error.retryAfterMs) || 0));
         }
       }
       onProgress?.(received, session.size);
@@ -84,26 +167,42 @@
       headers: { 'X-Upload-Token': session.token },
       signal: withDeadline(signal, 15_000),
     });
-    if (done.status !== 202) throw new Error((await done.text()).trim() || 'Could not finish the upload.');
+    if (done.status !== 202) throw uploadError((await done.text()).trim() || 'Could not finish the upload.', done);
     onProgress?.(session.size, session.size);
-    return done.json();
+    return { session, job: await done.json() };
   }
 
   // Upload many files through a bounded queue. Each file goes through the same
-  // resumable chunk uploader as a single-file upload, but at most five files are
-  // in flight at once. That keeps the number of simultaneous connections small
-  // and leaves the per-IP throttle and Cloudflare's read timeout untouched.
+  // resumable chunk uploader as a single-file upload. Concurrency is bounded
+  // and can adapt to 429/latency feedback without changing the public API.
   function batchUploadFiles(files, { userhash, time, onUpdate, onQueue } = {}) {
     const Queue = window.UploadQueue;
     if (!Queue) return Promise.reject(new Error('The batch uploader is not available. Please refresh the page.'));
     const queue = new Queue({
-      concurrency: 5,
+      concurrency: BATCH_CONCURRENCY,
+      adaptive: BATCH_ADAPTIVE,
+      minConcurrency: 1,
+      maxConcurrency: 16,
       retries: 2,
       onUpdate,
       uploader: async (file, { signal, onProgress, onStatus }) => {
-        const job = await chunkedUpload(file, { userhash, time, signal, onProgress });
+        const sha256 = await sha256File(file);
+        const existing = findSession(file);
+        const { session, job } = await chunkedUpload(file, {
+          userhash, time, sha256, signal, onProgress, session: existing,
+        });
+        if (session.url) { clearSession(file); return session.url; } // server deduped it
+        saveSession(file, session);
         onStatus?.('processing');
-        return pollJob(job.status_url, null, signal);
+        let url;
+        try {
+          url = await pollJob(job.status_url, null, signal);
+        } catch (err) {
+          saveSession(file, session); // keep the token so a reload can resume
+          throw err;
+        }
+        clearSession(file);
+        return url;
       },
     });
     queue.add(files);
@@ -513,8 +612,10 @@
       result.querySelector('[data-cancel-upload]').onclick = () => controller.abort();
       (async () => {
         try {
-          const job = await chunkedUpload(file, {
-            userhash: getCookie('userhash'),
+          const sha256 = await sha256File(file);
+          const existing = findSession(file);
+          const { session, job } = await chunkedUpload(file, {
+            userhash: getCookie('userhash'), sha256, session: existing,
             signal: controller.signal,
             onProgress: (sent, total) => {
               const percent = Math.round(sent / total * 100);
@@ -524,10 +625,18 @@
             },
           });
           progress.hidden = true;
-          status.textContent = 'Queued for upload…';
-          const url = await pollJob(job.status_url, state => {
-            status.textContent = state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…';
-          });
+          let url;
+          if (session.url) {
+            url = session.url;
+            clearSession(file);
+          } else {
+            saveSession(file, session);
+            status.textContent = 'Queued for upload…';
+            url = await pollJob(job.status_url, state => {
+              status.textContent = state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…';
+            });
+            clearSession(file);
+          }
           const name = new URL(url, location.origin).pathname.split('/').pop();
           data.files.unshift({ name, originalName: file.name, mime: file.type || 'application/octet-stream', size: file.size, uploadedAt: Date.now(), url });
           $('#file-count').textContent = data.files.length;
@@ -562,7 +671,7 @@
       progress.hidden = false;
       progress.setAttribute('aria-valuenow', String(stats.percent));
       progressBar.style.width = `${stats.percent}%`;
-      result.innerHTML = '<button class="button button-quiet button-small" type="button" data-cancel-upload>Cancel all</button>'
+      result.innerHTML = batchUI.actionsMarkup()
         + `<ul class="batch-list" aria-label="Upload queue">${items.map(item => {
         const label = item.label.length > 42 ? `${item.label.slice(0, 39)}…` : item.label;
         const detail = item.status === 'done' ? 'Saved'
@@ -572,7 +681,7 @@
           : item.status === 'uploading' ? `${item.sent}/${item.total} bytes` : 'Waiting…';
         return `<li class="batch-item" data-status="${item.status}"><span class="batch-name">${esc(label)}</span><span class="batch-detail">${detail}</span></li>`;
       }).join('')}</ul>`;
-      result.querySelector('[data-cancel-upload]')?.addEventListener('click', () => queue?.cancel());
+      wireBatchActions(result, items, queue);
     }
 
     function batchUploadLibrary(files) {
@@ -743,6 +852,26 @@
       toast('Link copied. Ready to share.');
     } catch { toast('Couldn’t copy automatically. Select the link and copy it manually.', 'error'); }
   }
+  // BatchUI owns the small amount of DOM wiring so it can be unit-tested.
+  const batchUI = window.BatchUI;
+  function wireBatchActions(root, items, queue) {
+    if (!batchUI) return;
+    batchUI.wire(root, {
+      onCancel: () => queue?.cancel(),
+      onCopy: () => {
+        const links = batchUI.batchLinks(items);
+        if (links.length) copyText(links.join('\n'));
+        else toast('No completed links to copy yet.', 'error');
+      },
+      onCsv: () => {
+        const csv = batchUI.batchCsv(items);
+        if (!csv) { toast('No completed links to export yet.', 'error'); return; }
+        const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+        const a = document.createElement('a'); a.href = url; a.download = 'mewpocket-uploads.csv'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      },
+    });
+  }
   let toastTimer;
   function toast(message, kind = 'success') {
     $('.toast')?.remove(); clearTimeout(toastTimer);
@@ -780,7 +909,7 @@
       if (!status || !result || !progress) return;
       setStatus(`Uploading ${stats.done + stats.failed} of ${stats.total} · ${stats.percent}%`, stats.failed ? 'error' : '');
       bar.style.width = `${stats.percent}%`;
-      result.innerHTML = '<button class="button button-quiet button-small" type="button" data-cancel-upload>Cancel all</button>'
+      result.innerHTML = batchUI.actionsMarkup()
         + `<ul class="batch-list" aria-label="Upload queue">${items.map(item => {
         const label = item.label.length > 42 ? `${item.label.slice(0, 39)}…` : item.label;
         const detail = item.status === 'done'
@@ -792,7 +921,7 @@
           : 'Waiting…';
         return `<li class="batch-item" data-status="${item.status}"><span class="batch-name">${esc(label)}</span><span class="batch-detail">${detail}</span></li>`;
       }).join('')}</ul>`;
-      result.querySelector('[data-cancel-upload]')?.addEventListener('click', () => queue?.cancel());
+      wireBatchActions(result, items, queue);
     }
 
     function batchUploadHome(files) {
@@ -840,9 +969,12 @@
       if (progress) { progress.hidden = false; bar.style.width = '0%'; }
       (async () => {
         try {
-          const job = await chunkedUpload(file, {
+          const sha256 = await sha256File(file);
+          const existing = findSession(file);
+          const { session, job } = await chunkedUpload(file, {
             userhash: !isLitterbox ? getCookie('userhash') : null,
             time: isLitterbox ? $('#expiry').value : null,
+            sha256, session: existing,
             signal: controller.signal,
             onProgress: (sent, total) => {
               const percent = Math.round(sent / total * 100);
@@ -851,8 +983,16 @@
             },
           });
           if (progress) progress.hidden = true;
-          setStatus('Queued for upload…');
-          const url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…'));
+          let url;
+          if (session.url) {
+            url = session.url;
+            clearSession(file);
+          } else {
+            saveSession(file, session);
+            setStatus('Queued for upload…');
+            url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…'));
+            clearSession(file);
+          }
           setStatus(isLitterbox ? 'Upload complete. This file will expire as selected.' : 'Upload complete.', 'success');
           showLink(url);
         } catch (error) {
@@ -997,6 +1137,7 @@
  
 
   initTheme();
+  showResumeHint();
 
   document.addEventListener('click', event => {
     const trigger = event.target.closest('[data-menu-toggle]');

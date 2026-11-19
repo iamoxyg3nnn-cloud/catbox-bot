@@ -54,7 +54,12 @@ function uploadThrottle(req, res, next) {
     uploadHits.set(ip, entry);
   }
   entry.count++;
+  const resetAt = entry.start + config.rateLimit.windowMs;
+  res.setHeader('X-RateLimit-Limit', String(config.rateLimit.maxUploads));
+  res.setHeader('X-RateLimit-Remaining', String(Math.max(0, config.rateLimit.maxUploads - entry.count)));
+  res.setHeader('X-RateLimit-Reset', String(Math.floor(resetAt / 1000)));
   if (entry.count > config.rateLimit.maxUploads) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil((resetAt - now) / 1000))));
     return res.status(429).type('text/plain').send('Slow down a little, okay?');
   }
   next();
@@ -149,6 +154,10 @@ app.get('/api/config', (req, res) => {
     maxFileSize: config.maxFileSize,
     maxFileSizeHuman: util.humanSize(config.maxFileSize),
     transport: config.discord.transport,
+    batchConcurrency: config.batching.concurrency,
+    batchMaxConcurrency: config.batching.maxConcurrency,
+    adaptiveBatches: config.batching.adaptive,
+    maxBatchFiles: config.batching.maxFiles,
     experimental: true,
   });
 });
@@ -391,13 +400,75 @@ let routeCursor = 0;
 // Live in-flight upload count, published in spoke heartbeats so the hub can
 // route by actual pressure instead of assuming every runner is idle.
 let activeUploads = 0;
+function asyncMode(req) {
+  const value = String(req.get('X-Catbox-Async') || '').toLowerCase();
+  if (value === '1') return 'always';
+  if (value === 'if-overloaded') return 'if-overloaded';
+  return 'off';
+}
+
+async function cleanupStaged(req) {
+  if (typeof req.releaseStaged === 'function') req.releaseStaged();
+  const staged = req.file && req.file.path;
+  if (staged) await fs.promises.unlink(staged).catch(() => {});
+}
+
+// Refuse only when there is nowhere left to send the bytes. A healthy spoke or
+// an idle local bot bucket is enough to admit the request, so normal traffic
+// never sees a 503 just because one runner is busy.
+async function checkAdmission() {
+  try {
+    const now = Date.now();
+    const nodes = (await getNodeRegistry()).filter(node =>
+      node && node.web_url
+      && node.status !== 'down' && node.status !== 'unhealthy' && !node.draining
+      && (now - (Number(node.last_heartbeat) || 0)) <= config.nodeStaleAfterMs
+    );
+    const spokeSaturated = !nodes.length
+      || nodes.every(node => nodeRouting.score(node) >= config.admission.nodeSaturationScore);
+    const storage = getStorage();
+    const stats = storage && typeof storage.stats === 'function' ? storage.stats() : null;
+    const buckets = stats && stats.buckets;
+    const localSaturated = activeUploads >= config.admission.localActiveMax
+      || Boolean(buckets && (buckets.waiters > 0 || buckets.blockedMs > 0));
+    return { admitted: !(spokeSaturated && localSaturated), stats };
+  } catch (err) {
+    console.warn('[admission] check failed, admitting request:', err.message);
+    return { admitted: true, stats: null };
+  }
+}
+
+function overloadRetryAfter(stats) {
+  const buckets = stats && stats.buckets;
+  const ms = buckets ? Math.max(buckets.blockedMs || 0, buckets.resetMs || 0) : 0;
+  if (ms <= 0) return config.admission.retryAfterSeconds;
+  return Math.min(120, Math.max(1, Math.ceil(ms / 1000)));
+}
+
 function trackActiveUploads(handler) {
-  return (req, res) => {
+  return async (req, res) => {
     activeUploads += 1;
     let done = false;
     const finish = () => { if (!done) { done = true; activeUploads -= 1; } };
     res.once('finish', finish);
     res.once('close', finish);
+    // Browsers already stream chunks through /api/uploads; admission applies to
+    // whole-body multipart uploads only, and never to delete/album operations.
+    if (req.file && asyncMode(req) !== 'always') {
+      const admission = await checkAdmission();
+      if (!admission.admitted) {
+        if (asyncMode(req) === 'if-overloaded') {
+          // Same staged body, but the job runner owns it from here. The plain
+          // synchronous contract is untouched for clients with no header.
+          req.headers['x-catbox-async'] = '1';
+          return handler(req, res);
+        }
+        res.setHeader('Retry-After', String(overloadRetryAfter(admission.stats)));
+        finish();
+        await cleanupStaged(req);
+        return res.status(503).type('text/plain').send('Uploads are temporarily busy. Please retry shortly.');
+      }
+    }
     return handler(req, res);
   };
 }
@@ -425,6 +496,14 @@ async function handleHubUpload(req, res, localHandler) {
       if (typeof req.releaseStaged === 'function') req.releaseStaged();
       if (staged) await fs.promises.unlink(staged).catch(() => {});
       return res.status(result.status).type('text/plain; charset=utf-8').send(result.text);
+    }
+    // A spoke that is itself overloaded is only a hard failure when there is
+    // no spare local capacity either; otherwise keep the existing local fallback.
+    if ((result.status === 429 || result.status === 503) && !(await checkAdmission()).admitted) {
+      for (const [name, value] of Object.entries(result.headers || {})) res.setHeader(name, value);
+      if (!res.getHeader('Retry-After')) res.setHeader('Retry-After', String(config.admission.retryAfterSeconds));
+      await cleanupStaged(req);
+      return res.status(result.status).type('text/plain').send('Uploads are temporarily busy. Please retry shortly.');
     }
     throw new Error(`spoke returned ${result.status}: ${result.text.slice(0, 120)}`);
   } catch (err) {
@@ -465,14 +544,25 @@ async function serveFile(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
   if (config.fileDelivery === 'redirect') {
+    // The signed storage URL is short-lived, so never cache the redirect.
+    res.setHeader('Cache-Control', 'private, no-store');
     return res.redirect(302, target);
   }
-  return proxyBytes(target, req, res, row.mime);
+  return proxyBytes(target, req, res, row.mime, row.expires_at);
+}
+
+// Immutable content can be cached for a year. Temporary files get a cache
+// lifetime bounded by their expiry so a link never outlives the file.
+function fileCacheControl(expiresAt) {
+  if (!expiresAt) return 'public, max-age=31536000, immutable';
+  const seconds = Math.floor((Number(expiresAt) - Date.now()) / 1000);
+  if (seconds <= 0) return 'no-store';
+  return `public, max-age=${seconds}, immutable`;
 }
 
 // Stream the signed storage URL to the browser under our own hostname. The
 // address bar never changes to the storage CDN, and no byte is written to disk.
-async function proxyBytes(sourceUrl, req, res, mime) {
+async function proxyBytes(sourceUrl, req, res, mime, expiresAt) {
   const controller = new AbortController();
   const onClose = () => controller.abort();
   res.on('close', onClose);
@@ -499,7 +589,7 @@ async function proxyBytes(sourceUrl, req, res, mime) {
     if (value) res.setHeader(name, value);
   }
   if (!res.getHeader('content-type')) res.type(mime || 'application/octet-stream');
-  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.setHeader('Cache-Control', fileCacheControl(expiresAt));
   res.status(upstream.status);
 
   if (req.method === 'HEAD' || !upstream.body) {

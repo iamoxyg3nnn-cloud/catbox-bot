@@ -1490,6 +1490,10 @@ button:disabled { cursor:not-allowed; opacity:.62; }
 .batch-detail a { color:#285b66; }
 .batch-item[data-status="done"] .batch-detail { color:#237446; }
 .batch-item[data-status="failed"] .batch-detail { color:#a83232; }
+.batch-actions { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 0; }
+.resume-hint { position:fixed; z-index:60; left:50%; bottom:18px; transform:translateX(-50%); display:flex; align-items:center; gap:12px; max-width:min(620px,calc(100% - 32px)); padding:10px 14px; border:1px solid #bcd8dd; border-radius:10px; background:#f4fbfc; box-shadow:0 10px 30px rgba(0,0,0,.14); font-size:13px; line-height:1.4; }
+.resume-hint button { flex:none; }
+:root[data-theme="dark"] .resume-hint { border-color:#5b4263; background:#241b28; }
 :root[data-theme="dark"] .batch-item:nth-child(odd) { background:rgba(255,255,255,.04); }
 :root[data-theme="dark"] .batch-detail { color:#b9c4c6; }
 :root[data-theme="dark"] .batch-detail a { color:#c99ae2; }

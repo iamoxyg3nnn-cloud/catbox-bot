@@ -94,7 +94,12 @@ async function forwardUpload(node, req) {
     signal: AbortSignal.timeout(config.discord.timeoutMs),
   });
   const text = (await response.text()).trim();
-  return { status: response.status, text };
+  const headers = {};
+  for (const name of ['retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset']) {
+    const value = response.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  return { status: response.status, text, headers };
 }
 
 // Spoke side: tell the hub where to send uploads for this session.

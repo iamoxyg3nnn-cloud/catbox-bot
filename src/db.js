@@ -122,6 +122,7 @@ function getDb() {
   migrateUsersTable();
   migrateFilesTable();
   migrateNodesTable();
+  migrateJobsTable();
   return db;
 }
 
@@ -150,6 +151,23 @@ function migrateFilesTable() {
   for (const [name, type] of Object.entries(additions)) {
     if (!columns.has(name)) db.exec(`ALTER TABLE files ADD COLUMN ${name} ${type}`);
   }
+}
+
+// Batches and content hashes are additive. Existing rows keep NULLs and stay
+// fully usable; new sessions populate them going forward.
+function migrateJobsTable() {
+  const columns = new Set(
+    db.prepare('PRAGMA table_info(upload_jobs)').all().map(row => row.name)
+  );
+  const additions = {
+    batch_id: 'TEXT',
+    batch_item_index: 'INTEGER',
+    sha256: 'TEXT',
+  };
+  for (const [name, type] of Object.entries(additions)) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE upload_jobs ADD COLUMN ${name} ${type}`);
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_batch ON upload_jobs(batch_id)');
 }
 
 // Add staging-usage columns to node tables created by older builds.
@@ -244,6 +262,20 @@ function recordFile({
 
 function getFile(name) {
   return getDb().prepare('SELECT * FROM files WHERE name = ?').get(name);
+}
+
+// A client-supplied hash is only a hint: it is matched against hashes the
+// server computed from bytes it actually stored. Scope by owner so one account
+// can never learn about another account's files through a hash collision.
+function findFileBySha256(sha256, ownerHash) {
+  if (!/^[a-f0-9]{64}$/.test(String(sha256 || ''))) return null;
+  return getDb().prepare(
+    `SELECT name, original_name, size, mime, expires_at FROM files
+      WHERE sha256 = ? AND status = 'ready' AND cdn_url IS NOT NULL
+        AND (expires_at IS NULL OR expires_at > ?)
+        AND owner_hash IS ?
+      ORDER BY uploaded_at DESC LIMIT 1`
+  ).get(sha256, Date.now(), ownerHash || null) || null;
 }
 
 function filesByOwner(ownerHash) {
@@ -426,13 +458,59 @@ function createJob(job) {
   getDb().prepare(
     `INSERT INTO upload_jobs
       (job_id, node_id, staged_path, owner_hash, original_name, mime, size,
-       expires_at, status, attempts, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`
+       expires_at, status, attempts, created_at, updated_at,
+       batch_id, batch_item_index, sha256)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?)`
   ).run(
     job.jobId, job.nodeId || 'local', job.stagedPath, job.ownerHash || null,
-    job.originalName, job.mime, job.size, job.expiresAt || null, now, now
+    job.originalName, job.mime, job.size, job.expiresAt || null, now, now,
+    job.batchId || null, Number.isInteger(job.batchItemIndex) ? job.batchItemIndex : null,
+    job.sha256 || null
   );
   return getJob(job.jobId);
+}
+
+// Aggregate job health for the admin Jobs panel. Counts are bounded so a huge
+// backlog cannot make the console unresponsive.
+function jobsByBatch(batchId) {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(batchId || ''))) return [];
+  return getDb().prepare(
+    'SELECT * FROM upload_jobs WHERE batch_id = ? ORDER BY batch_item_index, created_at'
+  ).all(batchId);
+}
+
+function jobStats(staleAfterMs = 180_000) {
+  const d = getDb();
+  const counts = d.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+       SUM(CASE WHEN status = 'uploading' THEN 1 ELSE 0 END) AS uploading,
+       SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) AS ready,
+       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+       COUNT(*) AS total
+     FROM upload_jobs`
+  ).get();
+  const stale = Number(d.prepare(
+    "SELECT COUNT(*) AS n FROM upload_jobs WHERE status = 'uploading' AND updated_at <= ?"
+  ).get(Date.now() - staleAfterMs).n);
+  const retried = Number(d.prepare('SELECT COUNT(*) AS n FROM upload_jobs WHERE attempts > 1').get().n);
+  const byBot = d.prepare(
+    "SELECT bot_id AS id, COUNT(*) AS jobs FROM upload_jobs WHERE bot_id IS NOT NULL GROUP BY bot_id ORDER BY jobs DESC LIMIT 20"
+  ).all();
+  const byBatch = d.prepare(
+    "SELECT batch_id AS id, COUNT(*) AS jobs, SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END) AS ready, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed FROM upload_jobs WHERE batch_id IS NOT NULL GROUP BY batch_id ORDER BY MIN(created_at) DESC LIMIT 20"
+  ).all();
+  return {
+    queued: counts.queued || 0,
+    uploading: counts.uploading || 0,
+    ready: counts.ready || 0,
+    failed: counts.failed || 0,
+    total: counts.total || 0,
+    stale,
+    retried,
+    byBot,
+    byBatch,
+  };
 }
 
 function getJob(jobId) {
@@ -548,7 +626,7 @@ const ADMIN_SEARCH = {
   albums: ['short', 'title', 'description', 'owner_hash'],
   album_files: ['album_short', 'file_name'],
   messages: ['name', 'email', 'body'],
-  upload_jobs: ['job_id', 'node_id', 'file_name', 'original_name', 'status', 'last_error'],
+  upload_jobs: ['job_id', 'node_id', 'file_name', 'original_name', 'status', 'last_error', 'batch_id'],
   discord_bots: ['bot_id', 'channel_id', 'health'],
   nodes: ['node_id', 'hostname', 'web_url', 'status'],
   upload_journal: ['job_id', 'file_name', 'stage', 'error'],
@@ -632,6 +710,7 @@ module.exports = {
   setAlbumFiles, addToAlbum, removeFromAlbum, albumCount, albumsByOwner,
   addMessage,
   createJob, getJob, claimJob, finishJob, failJob, staleJobs, requeueJob, activeStagedPaths,
+  findFileBySha256, jobsByBatch, jobStats,
   upsertNode, getNode, listNodes,
   addJournal, unresolvedJournal, resolveJournal, journalStats,
   adminQuery, adminCount, adminDelete, adminUpdate,

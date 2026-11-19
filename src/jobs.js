@@ -42,6 +42,9 @@ async function enqueue(details) {
       mime: details.mime,
       size: details.size,
       expiresAt: details.expiresAt || null,
+      batchId: details.batchId || null,
+      batchItemIndex: details.batchItemIndex,
+      sha256: details.sha256 || null,
     });
   } catch (err) {
     // A deterministic id makes a retried final acknowledgement safe even if

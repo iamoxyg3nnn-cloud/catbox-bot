@@ -143,6 +143,25 @@ async function recordFile({
 
 const getFile = name => first('files', { name: `eq.${name}`, limit: 1 });
 
+// Same contract as the SQLite adapter: only hashes computed from stored bytes
+// count, and the owner scope prevents cross-account hash probing.
+async function findFileBySha256(sha256, ownerHash) {
+  if (!/^[a-f0-9]{64}$/.test(String(sha256 || ''))) return null;
+  const params = new URLSearchParams({
+    sha256: `eq.${sha256}`,
+    status: 'eq.ready',
+    cdn_url: 'not.is.null',
+    or: `(expires_at.is.null,expires_at.gt.${Date.now()})`,
+    select: 'name,original_name,size,mime,expires_at',
+    order: 'uploaded_at.desc',
+    limit: '1',
+  });
+  if (ownerHash) params.set('owner_hash', `eq.${ownerHash}`);
+  else params.set('owner_hash', 'is.null');
+  const rows = await rawSelect('files', params.toString());
+  return rows[0] || null;
+}
+
 async function filesByOwner(ownerHash) {
   return rawSelect('files', `owner_hash=eq.${encodeURIComponent(ownerHash)}&${aliveFilter()}&order=uploaded_at.desc`);
 }
@@ -276,6 +295,9 @@ async function createJob(job) {
     attempts: 0,
     created_at: now,
     updated_at: now,
+    batch_id: job.batchId || null,
+    batch_item_index: Number.isInteger(job.batchItemIndex) ? job.batchItemIndex : null,
+    sha256: job.sha256 || null,
   });
   return getJob(job.jobId);
 }
@@ -326,6 +348,50 @@ async function failJob(jobId, error) {
 async function activeStagedPaths() {
   const rows = await rawSelect('upload_jobs', 'status=in.(queued,uploading)&select=staged_path');
   return rows.map(row => row.staged_path).filter(Boolean);
+}
+
+async function jobsByBatch(batchId) {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(batchId || ''))) return [];
+  return rawSelect(
+    'upload_jobs',
+    `batch_id=eq.${encodeURIComponent(batchId)}&order=batch_item_index.asc&limit=100`
+  );
+}
+
+// PostgREST has no GROUP BY, so aggregate a bounded recent window in memory.
+async function jobStats(staleAfterMs = 180_000) {
+  const rows = await rawSelect(
+    'upload_jobs',
+    'select=job_id,status,bot_id,batch_id,attempts,created_at,updated_at&order=created_at.desc&limit=1000'
+  );
+  const cutoff = Date.now() - staleAfterMs;
+  const stats = {
+    queued: 0, uploading: 0, ready: 0, failed: 0, total: rows.length,
+    stale: 0, retried: 0, byBot: [], byBatch: [],
+  };
+  const bots = new Map();
+  const batches = new Map();
+  for (const row of rows) {
+    const status = String(row.status || '');
+    if (Object.prototype.hasOwnProperty.call(stats, status)) stats[status] += 1;
+    if (status === 'uploading' && Number(row.updated_at) <= cutoff) stats.stale += 1;
+    if (Number(row.attempts) > 1) stats.retried += 1;
+    if (row.bot_id) {
+      const entry = bots.get(row.bot_id) || { id: row.bot_id, jobs: 0 };
+      entry.jobs += 1;
+      bots.set(row.bot_id, entry);
+    }
+    if (row.batch_id) {
+      const entry = batches.get(row.batch_id) || { id: row.batch_id, jobs: 0, ready: 0, failed: 0 };
+      entry.jobs += 1;
+      if (status === 'ready') entry.ready += 1;
+      if (status === 'failed') entry.failed += 1;
+      batches.set(row.batch_id, entry);
+    }
+  }
+  stats.byBot = [...bots.values()].sort((a, b) => b.jobs - a.jobs).slice(0, 20);
+  stats.byBatch = [...batches.values()].slice(0, 20);
+  return stats;
 }
 
 /* ---------------- nodes ---------------- */
@@ -399,7 +465,7 @@ const ADMIN_SEARCH = {
   albums: ['short', 'title', 'description', 'owner_hash'],
   album_files: ['album_short', 'file_name'],
   messages: ['name', 'email', 'body'],
-  upload_jobs: ['job_id', 'node_id', 'file_name', 'original_name', 'status', 'last_error'],
+  upload_jobs: ['job_id', 'node_id', 'file_name', 'original_name', 'status', 'last_error', 'batch_id'],
   discord_bots: ['bot_id', 'channel_id', 'health'],
   nodes: ['node_id', 'hostname', 'web_url', 'status'],
   upload_journal: ['job_id', 'file_name', 'stage', 'error'],
@@ -485,6 +551,7 @@ module.exports = {
   setAlbumFiles, addToAlbum, removeFromAlbum, albumCount, albumsByOwner,
   addMessage,
   createJob, getJob, claimJob, finishJob, failJob, staleJobs, requeueJob, activeStagedPaths,
+  findFileBySha256, jobsByBatch, jobStats,
   upsertNode, getNode, listNodes,
   addJournal, unresolvedJournal, resolveJournal, journalStats,
   adminQuery, adminCount, adminDelete, adminUpdate,

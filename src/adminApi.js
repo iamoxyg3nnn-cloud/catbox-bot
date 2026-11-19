@@ -340,6 +340,26 @@ function register(app) {
     });
   }));
 
+  // Purpose-built Jobs view: aggregates that drive the dashboard cards plus a
+  // bounded recent queue. Uses the same adapter surface as the rest of the
+  // console so it works on both SQLite and Supabase.
+  app.get('/api/admin/jobs', asyncRoute(async (req, res) => {
+    const stats = db.jobStats ? await db.jobStats(config.uploadRecovery.staleAfterMs) : null;
+    const rows = await db.adminQuery('upload_jobs', { limit: 50 });
+    const batches = stats && stats.byBatch && stats.byBatch.length
+      ? await Promise.all(stats.byBatch.slice(0, 10).map(async batch => ({
+        ...batch,
+        items: typeof db.jobsByBatch === 'function' ? await db.jobsByBatch(batch.id) : [],
+      })))
+      : [];
+    res.json({
+      ok: true,
+      stats,
+      recent: rows.map(row => cleanRow('upload_jobs', row)),
+      batches,
+    });
+  }));
+
   app.get('/api/admin/audit', (req, res) => {
     res.json({ ok: true, events: adminSecurity.recentAudit(100), max: adminSecurity.MAX_EVENTS });
   });

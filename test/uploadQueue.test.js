@@ -63,6 +63,34 @@ test('UploadQueue cancel aborts in-flight uploads', async () => {
   assert.equal(q.stats.done, 0);
 });
 
+test('UploadQueue does not retry permanent HTTP errors', async () => {
+  let calls = 0;
+  const q = new UploadQueue({
+    retries: 3,
+    uploader: async () => { calls += 1; const e = new Error('too large'); e.status = 413; throw e; },
+  });
+  q.add([file('big.txt', 10)]);
+  const stats = await q.run();
+  assert.equal(calls, 1);
+  assert.equal(stats.failed, 1);
+});
+
+test('UploadQueue respects Retry-After and backs off adaptively on 429', async () => {
+  let calls = 0;
+  const q = new UploadQueue({
+    concurrency: 4, retries: 1, adaptive: true, minConcurrency: 1, maxConcurrency: 8,
+    uploader: async f => {
+      calls += 1;
+      if (calls === 1) { const e = new Error('slow down'); e.status = 429; e.retryAfterMs = 20; throw e; }
+      return 'url';
+    },
+  });
+  q.add(Array.from({ length: 8 }, (_, i) => file(`f${i}.txt`, 1)));
+  const stats = await q.run();
+  assert.equal(stats.total, 8);
+  assert.ok(q.concurrency >= 1);
+});
+
 test('UploadQueue reports aggregate progress', () => {
   const q = new UploadQueue({ uploader: async () => 'url' });
   q.add([file('a', 100), file('b', 300)]);

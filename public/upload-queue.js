@@ -18,13 +18,28 @@
 
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+  // Only transient conditions deserve another attempt. A 401/403/413 will
+  // fail identically every time and just burns the retry budget.
+  function isRetryable(err) {
+    if (err && err.retryable === false) return false;
+    const status = Number(err && err.status);
+    if (!status) return true; // network error, abort, or unknown failure
+    return status === 408 || status === 409 || status === 429 || status >= 500;
+  }
+
   class UploadQueue {
-    constructor({ concurrency = 5, retries = 2, uploader, onUpdate } = {}) {
+    constructor({
+      concurrency = 5, retries = 2, uploader, onUpdate,
+      adaptive = false, minConcurrency = 1, maxConcurrency = 16,
+    } = {}) {
       this.concurrency = Math.max(1, Number(concurrency) || 5);
       this.retries = Math.max(0, Number(retries) || 0);
       if (typeof uploader !== 'function') throw new TypeError('uploader must be a function');
       this.uploader = uploader;
       this.onUpdate = typeof onUpdate === 'function' ? onUpdate : () => {};
+      this.adaptive = Boolean(adaptive);
+      this.minConcurrency = Math.max(1, Number(minConcurrency) || 1);
+      this.maxConcurrency = Math.max(this.minConcurrency, Number(maxConcurrency) || 16);
       this.items = [];
       this.controllers = new Map();
       this.cancelled = false;
@@ -63,32 +78,48 @@
         failed: by('failed'),
         cancelled: by('cancelled'),
         percent: totalBytes ? Math.round(sentBytes / totalBytes * 100) : 0,
+        concurrency: this.concurrency,
       };
     }
 
     emit() { this.onUpdate(this.stats, this.items); }
 
     async run() {
-      if (this.running) return;
+      if (this.running) return this.stats;
       this.running = true;
       this.cancelled = false;
-      let cursor = 0;
-      const worker = async () => {
-        while (!this.cancelled) {
-          const index = cursor++;
-          const item = this.items[index];
-          if (!item) return;
-          await this.process(item);
+      const active = new Set();
+      let next = 0, clean = 0, penalty = false;
+      while (!this.cancelled && (next < this.items.length || active.size)) {
+        while (!this.cancelled && active.size < this.concurrency && next < this.items.length) {
+          const item = this.items[next++];
+          const task = this.process(item).then(result => {
+            active.delete(task);
+            if (result && result.penalized) penalty = true;
+            if (result && result.ok) clean += 1;
+            else clean = 0;
+          });
+          active.add(task);
         }
-      };
-      const workers = Array.from({ length: Math.min(this.concurrency, this.items.length) }, worker);
-      await Promise.all(workers);
+        if (!active.size) break;
+        await Promise.race(active);
+        if (this.adaptive) {
+          if (penalty) {
+            this.concurrency = Math.max(this.minConcurrency, Math.floor(this.concurrency / 2));
+            penalty = false; clean = 0;
+          } else if (clean >= 3 && this.concurrency < this.maxConcurrency) {
+            this.concurrency += 1; clean = 0;
+          }
+        }
+        this.emit();
+      }
       this.running = false;
       this.emit();
       return this.stats;
     }
 
     async process(item) {
+      let penalized = false;
       while (!this.cancelled && item.attempts <= this.retries) {
         item.attempts += 1;
         const controller = new AbortController();
@@ -111,27 +142,29 @@
           item.sent = item.total;
           this.controllers.delete(item.id);
           this.emit();
-          return;
+          return { ok: true, penalized };
         } catch (err) {
           this.controllers.delete(item.id);
           if (this.cancelled || (controller.signal && controller.signal.aborted)) {
             item.status = 'cancelled';
             this.emit();
-            return;
+            return { ok: false, penalized };
           }
           item.error = err && err.message ? err.message : 'Upload failed.';
-          if (item.attempts <= this.retries) {
+          if (Number(err && err.status) === 429 || Number(err && err.status) >= 500) penalized = true;
+          if (isRetryable(err) && item.attempts <= this.retries) {
             item.status = 'queued';
             item.sent = 0;
             this.emit();
-            await wait(400 * 2 ** (item.attempts - 1));
+            await wait(Math.max(400 * 2 ** (item.attempts - 1), Number(err && err.retryAfterMs) || 0));
             continue;
           }
           item.status = 'failed';
           this.emit();
-          return;
+          return { ok: false, penalized };
         }
       }
+      return { ok: false, penalized };
     }
 
     cancel() {

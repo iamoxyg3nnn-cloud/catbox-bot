@@ -63,6 +63,10 @@ class Bucket {
       concurrency: this.concurrency,
       rateLimited: this.rateLimited,
       adjustments: this.adjustments,
+      inFlight: this.inFlight,
+      waiters: this.waiters.length,
+      blockedMs: Math.max(0, this.blockedUntil - Date.now()),
+      resetMs: Math.max(0, this.resetAt - Date.now()),
     };
   }
 
@@ -168,6 +172,10 @@ class DiscordStorage {
         minConcurrency: buckets.length ? Math.min(...buckets.map(b => b.concurrency)) : 0,
         rateLimited: buckets.reduce((sum, b) => sum + b.rateLimited, 0),
         adjustments: buckets.reduce((sum, b) => sum + b.adjustments, 0),
+        inFlight: buckets.reduce((sum, b) => sum + b.inFlight, 0),
+        waiters: buckets.reduce((sum, b) => sum + b.waiters, 0),
+        blockedMs: Math.max(0, ...buckets.map(b => b.blockedMs)),
+        resetMs: Math.max(0, ...buckets.map(b => b.resetMs)),
       },
     };
   }

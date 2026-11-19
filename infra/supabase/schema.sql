@@ -106,8 +106,14 @@ alter table upload_jobs add column if not exists mime text;
 alter table upload_jobs add column if not exists size bigint;
 alter table upload_jobs add column if not exists expires_at bigint;
 alter table upload_jobs add column if not exists file_name text;
+-- Batch manifest membership and the optional client hash hint. All nullable so
+-- older rows and single-file uploads keep working unchanged.
+alter table upload_jobs add column if not exists batch_id text;
+alter table upload_jobs add column if not exists batch_item_index integer;
+alter table upload_jobs add column if not exists sha256 text;
 
 create index if not exists idx_jobs_status on upload_jobs(status);
+create index if not exists idx_jobs_batch on upload_jobs(batch_id);
 create index if not exists idx_jobs_node on upload_jobs(node_id);
 
 create table if not exists discord_bots (

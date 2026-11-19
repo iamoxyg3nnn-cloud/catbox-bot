@@ -126,6 +126,24 @@ const config = {
     maxUploads: Math.max(1, parseInt(process.env.UPLOAD_MAX_PER_MIN || '40', 10)),
   },
 
+  // Browser batch queue tuning. These are hints only; the queue still caps
+  // concurrency locally, and the server remains authoritative on file size.
+  batching: {
+    concurrency: Math.max(1, Math.min(16, parseInt(process.env.BATCH_CONCURRENCY || '5', 10) || 5)),
+    adaptive: process.env.BATCH_ADAPTIVE !== '0',
+    maxConcurrency: Math.max(5, Math.min(16, parseInt(process.env.BATCH_MAX_CONCURRENCY || '8', 10) || 8)),
+    maxFiles: Math.max(1, Math.min(100, parseInt(process.env.BATCH_MAX_FILES || '100', 10) || 100)),
+  },
+
+  // Overload admission. A request is refused only when every healthy spoke AND
+  // the hub's own Discord buckets are saturated, so a single busy runner never
+  // turns into a user-visible outage while spare capacity exists elsewhere.
+  admission: {
+    nodeSaturationScore: Math.max(1, parseInt(process.env.NODE_SATURATION_SCORE || '12', 10) || 12),
+    localActiveMax: Math.max(1, parseInt(process.env.LOCAL_ACTIVE_MAX || '16', 10) || 16),
+    retryAfterSeconds: Math.max(1, parseInt(process.env.OVERLOAD_RETRY_AFTER || '10', 10) || 10),
+  },
+
   // Recovery knobs for uploads that are interrupted mid-flight. A job left in
   // `uploading` past staleAfterMs is assumed abandoned by a dead process and is
   // requeued; orphaned temp files older than tempMaxAgeMs are swept.
