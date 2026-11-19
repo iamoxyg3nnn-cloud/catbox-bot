@@ -55,8 +55,14 @@ const config = {
   // Where uploaded bytes are staged while they are being sent to Discord.
   // This directory is transient: production must never treat it as storage.
   dataDir: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
+
+  // In-flight upload bodies are staged on the node's local disk. Production
+  // Windows runners set STAGING_DIR=D:\catbox_staging so the body survives a
+  // Discord upload failure and is deleted only after Discord confirms it.
+  // Local/test runs keep the old ./data/tmp path when the variable is absent.
+  stagingDir: process.env.STAGING_DIR || null,
   // Only in-flight upload bodies live here; there is no permanent files dir.
-  get tmpDir() { return path.join(this.dataDir, 'tmp'); },
+  get tmpDir() { return this.stagingDir || path.join(this.dataDir, 'tmp'); },
   get dbPath() { return path.join(this.dataDir, 'catbox.db'); },
 
   // Discord's practical non-Nitro per-file limit. Configurable so chunking can

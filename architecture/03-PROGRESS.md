@@ -179,9 +179,16 @@ the actual `claim_upload_job()` concurrency behaviour cannot be validated offlin
   - `src/auth.js` rotates the account session on sign-in to prevent session fixation; `src/adminApi.js` rechecks `users.role` against the database on every request and blocks demotion/deletion of the last administrator.
   - All admin writes now require `X-CSRF-Token`; the console fetches it from `/api/admin/status`. Added tests for CSRF rejection, bad-origin rejection and CSP hash correctness. 62/62 tests passing.
 
+## Deployment: Windows runner + Tailscale (this session)
+- Audited the reference backend (`C:\Users\basud\OneDrive\Desktop\chuglii\backend`, read-only). It does **not** gain durable storage from RDP/Tailscale: `.github/workflows/secure-rdp.yml:57-58` runs an ephemeral `windows-latest` VM for at most 355 minutes; Tailscale only exposes it for `mstsc` (`scripts/parallel-setup.ps1:242-397`). The "~150 GiB" is just that runner's D: drive (`fleet-sweep.log:2-16`); it disappears when the job ends. Local `D:\videos` is a staging buffer deleted after successful remote upload (`channel/channel_upload.go:264-275`). `.freebuff` is a 37-byte UUID and `.audit` is <22 KB of JSON backups - neither supplies capacity.
+- Rewrote `.github/workflows/catbox-bot.yml` for `runs-on: windows-latest` while preserving the self-dispatch chain (`catbox-session`, 5-retry budget, early insurance + session-end steps, `SESSION_COMPLETE`, Discord alert). All steps now use `pwsh`; cloudflared is the Windows binary; the keep-alive still holds 330 minutes under the 360-minute job cap.
+- Added a Tailscale/RDP step gated on the `TAILSCALE_AUTH_KEY` secret (installs Tailscale, enables TermService/firewall, creates a one-session local admin, prints `mstsc` details, and falls back to userspace networking). RDP failure is non-fatal; a missing secret only emits a warning so the bot stays up. **The secret must be added in GitHub for RDP to be available.**
+- Added `STAGING_DIR` in `src/config.js`; production sets `STAGING_DIR=D:\catbox_staging`, so in-flight bodies live on the runner's D: drive instead of `./data/tmp`. `commitUpload()` still unlinks the staged file only after Discord confirms and Supabase records the metadata; a failed Discord upload keeps the local body for the job retry.
+- Validated the rewritten workflow with a YAML parser (15 steps, `windows-latest`) and parsed all 11 inline PowerShell blocks with the PowerShell parser - no syntax errors.
+
 ## Handoff notes / gotchas
 - Checkout directory is literally named `node_modules`; `bootstrap.js` sets `NODE_PATH` and must stay first in `server.js`.
-- No production code writes permanent bytes to local disk. `data/tmp` and `D:\catbox_staging` are transient.
+- No production code writes permanent bytes to local disk. `STAGING_DIR` (`D:\catbox_staging` in production) and `data/tmp` locally are transient.
 - `DISCORD_BOTS` tokens, tunnel tokens, Supabase keys and `NODE_UPLOAD_SECRET` must never be committed.
 - Plain API clients still get synchronous 200 + plain-text URL. Async mode is opt-in via `X-Catbox-Async: 1`.
 - The Worker quota is durable via `QUOTA_KV`; the in-memory map is only a local fallback.

@@ -1,10 +1,15 @@
 name: Catbox Bot (Supabase metadata)
 
-# Runs on ubuntu-latest. This workflow exists only to keep the Catbox control
-# plane online. Supabase/Redis are hosted by a SEPARATE workflow in the
-# mew-pocket/Supabase-Actions repo; they must overlap because the bot uses them
-# for metadata. Each service owns its own Cloudflare tunnel, so concurrent
-# sessions do not fight over ingress.
+# Runs on a windows-latest GitHub-hosted runner. This workflow exists only to
+# keep the Catbox control plane online. Supabase/Redis are hosted by a SEPARATE
+# workflow in the mew-pocket/Supabase-Actions repo; they must overlap because
+# the bot uses them for metadata. Each service owns its own Cloudflare tunnel,
+# so concurrent sessions do not fight over ingress.
+#
+# The Windows runner's D: drive (~150 GiB) is used ONLY as transient staging
+# for upload bodies (D:\catbox_staging). Tailscale + RDP expose the session to
+# the operator; neither supplies durable storage. Discord remains the only byte
+# store, and a staged body is deleted only after Discord confirms the upload.
 #
 # Never scheduled: no `schedule`/cron trigger, now or later. workflow_dispatch
 # is the only trigger. Each run queues its own successor, which waits in the
@@ -32,8 +37,11 @@ permissions:
 jobs:
   catbox:
     name: catbox-control-plane
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
     steps:
       - name: Checkout
@@ -45,38 +53,39 @@ jobs:
         # retry; the end-of-run step replaces it with a reset counter when the
         # session is healthy.
         if: always()
-        shell: bash
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGERED_BY: ${{ inputs.triggered_by }}
           CHAIN_REF: ${{ github.event.repository.default_branch || github.ref_name }}
         run: |
-          n=0
-          if [[ "$TRIGGERED_BY" =~ ^session-chain:([0-9]{1,9})$ ]]; then
-            n="${BASH_REMATCH[1]}"
-          fi
-          max_retries=5
-          if (( n + 1 > max_retries )); then
-            echo "Retry budget spent ($n/$max_retries) - not queueing."
+          $n = 0
+          if ($env:TRIGGERED_BY -match '^session-chain:(\d{1,9})$') { $n = [int]$Matches[1] }
+          $maxRetries = 5
+          if (($n + 1) -gt $maxRetries) {
+            Write-Host "Retry budget spent ($n/$maxRetries) - not queueing."
             exit 0
-          fi
-          body="$(jq -n --arg ref "$CHAIN_REF" --arg tb "session-chain:$((n + 1))" \
-            '{ref: $ref, inputs: {triggered_by: $tb}}')"
-          for attempt in 1 2 3; do
-            if curl -sS --fail-with-body -X POST \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                -H "X-GitHub-Api-Version: 2022-11-28" \
-                -H "Content-Type: application/json" \
-                "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches" \
-                -d "$body"; then
-              echo "Successor queued for $CHAIN_REF (retry $((n + 1))/$max_retries)."
+          }
+          $body = @{
+            ref = $env:CHAIN_REF
+            inputs = @{ triggered_by = "session-chain:$($n + 1)" }
+          } | ConvertTo-Json -Compress -Depth 5
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          foreach ($attempt in 1..3) {
+            try {
+              Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+              Write-Host "Successor queued for $env:CHAIN_REF (retry $($n + 1)/$maxRetries)."
               exit 0
-            fi
-            echo "::warning::Dispatch attempt $attempt failed."
-            if (( attempt < 3 )); then sleep 15; fi
-          done
-          echo "::error::Could not queue the next session from the insurance step."
+            } catch {
+              Write-Warning "Dispatch attempt $attempt failed: $($_.Exception.Message)"
+              if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+            }
+          }
+          Write-Error "Could not queue the next session from the insurance step."
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -87,7 +96,102 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: 'Prepare local D: staging'
+        shell: pwsh
+        run: |
+          # Transient bytes only. The app deletes each staged file from here as
+          # soon as Discord confirms the attachment and Supabase records it.
+          New-Item -ItemType Directory -Force -Path 'D:\catbox_staging' | Out-Null
+          Write-Host "Staging directory ready: D:\catbox_staging"
+
+      - name: Enable Tailscale RDP access
+        if: env.TAILSCALE_AUTH_KEY != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # GitHub-hosted runners inject proxy variables that hijack
+          # tailscaled's control-plane TLS handshake ("Tailscale is starting").
+          foreach ($v in 'ALL_PROXY','all_proxy','HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy') {
+            Remove-Item "Env:$v" -ErrorAction SilentlyContinue
+          }
+
+          try {
+            $msi = "$env:RUNNER_TEMP\tailscale-setup.msi"
+            if (-not (Test-Path $msi)) {
+              Invoke-WebRequest -Uri 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' \
+                -OutFile $msi -UseBasicParsing -TimeoutSec 120
+            }
+            $rc = (Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/quiet', '/norestart') -Wait -PassThru).ExitCode
+            if ($rc -ne 0) { throw "Tailscale MSI install exited $rc" }
+
+            $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+            if (-not (Test-Path $ts)) { throw "tailscale.exe not found after install" }
+
+            Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service -Name TermService -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -ErrorAction SilentlyContinue
+            New-NetFirewallRule -DisplayName 'Catbox operator RDP' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+
+            $rdpUser = 'catbox-rdp'
+            $password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object { [char]$_ })
+            & net user $rdpUser $password /add /y 2>&1 | Out-Null
+            & net localgroup administrators $rdpUser /add /y 2>&1 | Out-Null
+
+            $hostname = "catbox-rdp-$env:GITHUB_RUN_ID"
+            $upArgs = @('up', "--authkey=$env:TAILSCALE_AUTH_KEY", "--hostname=$hostname", '--accept-dns=false', '--timeout=120s', '--reset')
+            & $ts @upArgs 2>&1 | ForEach-Object { Write-Host "tailscale: $_" }
+
+            $ip = ''
+            for ($i = 0; $i -lt 18; $i++) {
+              $ip = (& $ts ip -4 2>$null | Out-String).Trim()
+              if ($ip -match '^\d+\.\d+\.\d+\.\d+$') { break }
+              Start-Sleep -Seconds 5
+            }
+
+            if ($ip -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+              # Some runners cannot bring up the WinTun adapter. Retry with the
+              # userspace daemon, as the reference fleet does.
+              Write-Warning 'Tailscale WinTun did not come up; retrying with userspace networking.'
+              Stop-Service -Name Tailscale -Force -ErrorAction SilentlyContinue
+              Get-Process tailscaled -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+              $stateDir = "$env:TEMP\CatboxTailscaleUserspace"
+              New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+              $stateFile = Join-Path $stateDir 'server-state.conf'
+              $tsd = "$env:ProgramFiles\Tailscale\tailscaled.exe"
+              Start-Process -FilePath $tsd -ArgumentList @("--state=`"$stateFile`"", '--tun=userspace-networking') -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+              Start-Sleep -Seconds 20
+              & $ts @upArgs 2>&1 | ForEach-Object { Write-Host "tailscale(userspace): $_" }
+              for ($i = 0; $i -lt 24; $i++) {
+                $ip = (& $ts ip -4 2>$null | Out-String).Trim()
+                if ($ip -match '^\d+\.\d+\.\d+\.\d+$') { break }
+                Start-Sleep -Seconds 5
+              }
+            }
+
+            if ($ip -match '^\d+\.\d+\.\d+\.\d+$') {
+              "TS_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
+              Write-Host "======================================="
+              Write-Host "  CATBOX RDP (this session only)"
+              Write-Host "  mstsc /v:$ip"
+              Write-Host "  user: $rdpUser"
+              Write-Host "  pass: $password"
+              Write-Host "======================================="
+            } else {
+              # RDP is an operator convenience, not a dependency of the bot.
+              Write-Warning 'Tailscale did not obtain an IPv4 address - RDP disabled, control plane will still start.'
+            }
+          } catch {
+            Write-Warning "Tailscale/RDP setup failed: $($_.Exception.Message) - control plane will still start."
+          }
+
+      - name: Tailscale RDP not configured
+        if: env.TAILSCALE_AUTH_KEY == ''
+        shell: pwsh
+        run: Write-Warning 'TAILSCALE_AUTH_KEY is not set - RDP access is disabled. Add the secret to enable it.'
+
       - name: Write runtime configuration
+        shell: pwsh
         env:
           PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
@@ -96,23 +200,25 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           NODE_UPLOAD_SECRET: ${{ secrets.NODE_UPLOAD_SECRET }}
         run: |
-          cat > .env <<EOF
+          @"
           PORT=3000
-          PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+          PUBLIC_BASE_URL=$env:PUBLIC_BASE_URL
           TRUST_PROXY=1
           DATA_DIR=./data
+          STAGING_DIR=D:\catbox_staging
           MAX_FILE_SIZE=20mb
           FILE_DELIVERY=proxy
           DISCORD_BOT_ID=primary
-          DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-          DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
-          SUPABASE_URL=${SUPABASE_URL}
-          SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-          NODE_UPLOAD_SECRET=${NODE_UPLOAD_SECRET}
-          EOF
-          echo "Runtime configuration written (tokens are masked in logs)."
+          DISCORD_BOT_TOKEN=$env:DISCORD_BOT_TOKEN
+          DISCORD_CHANNEL_ID=$env:DISCORD_CHANNEL_ID
+          SUPABASE_URL=$env:SUPABASE_URL
+          SUPABASE_SERVICE_ROLE_KEY=$env:SUPABASE_SERVICE_ROLE_KEY
+          NODE_UPLOAD_SECRET=$env:NODE_UPLOAD_SECRET
+          "@ | Set-Content -Path .env -Encoding utf8
+          Write-Host 'Runtime configuration written (tokens are masked in logs).'
 
       - name: Require durable metadata config
+        shell: pwsh
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -124,79 +230,86 @@ jobs:
           # blank the app silently falls back to local SQLite and every
           # metadata write disappears at the next session, which looks exactly
           # like a database flush. Fail loudly instead.
-          missing=0
-          for name in SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY DISCORD_BOT_TOKEN DISCORD_CHANNEL_ID NODE_UPLOAD_SECRET; do
-            if [ -z "${!name}" ]; then
-              echo "::error::$name is empty - refusing to start on an ephemeral runner"
-              missing=1
-            fi
-          done
-          if [ "$missing" -ne 0 ]; then exit 1; fi
-          echo "Durable metadata configuration present."
+          $missing = @()
+          foreach ($name in 'SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','DISCORD_BOT_TOKEN','DISCORD_CHANNEL_ID','NODE_UPLOAD_SECRET') {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              Write-Error "::error::$name is empty - refusing to start on an ephemeral runner"
+              $missing += $name
+            }
+          }
+          if ($missing.Count -gt 0) { exit 1 }
+          Write-Host 'Durable metadata configuration present.'
 
       - name: Apply metadata schema
+        shell: pwsh
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          python3 -c 'import json,sys; print(json.dumps({"sql": sys.stdin.read()}))' \
-            < infra/supabase/schema.sql > /tmp/catbox-schema.json
+          $sql = Get-Content -Raw -Path 'infra/supabase/schema.sql'
+          $payload = @{ sql = $sql } | ConvertTo-Json -Compress -Depth 5
+          $headers = @{
+            apikey = $env:SUPABASE_SERVICE_ROLE_KEY
+            Authorization = "Bearer $env:SUPABASE_SERVICE_ROLE_KEY"
+          }
 
           # Supabase is hosted by a separate workflow. Wait for its metadata
           # endpoint rather than racing it (a 502 here used to fail the job).
-          echo "Waiting for Supabase metadata endpoint..."
-          READY=0
-          for i in $(seq 1 120); do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' "$SUPABASE_URL/rest/v1/" \
-              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" 2>/dev/null || echo 000)
-            # Cloudflare returns 530 for a dead tunnel. Treating any non-502/503
-            # as ready let a 530 through, then the schema POST failed and the
-            # chain burned all five retries. Only real HTTP answers count.
-            if [[ "$code" =~ ^[2-4][0-9][0-9]$ ]]; then
-              READY=1
-              echo "Supabase ready after $i checks (HTTP $code)."
-              break
-            fi
-            sleep 10
-          done
-          if [ "$READY" -ne 1 ]; then
-            echo "::error::Supabase never became ready"
-            exit 1
-          fi
+          Write-Host 'Waiting for Supabase metadata endpoint...'
+          $ready = $false
+          foreach ($i in 1..120) {
+            try {
+              $response = Invoke-WebRequest -Uri "$env:SUPABASE_URL/rest/v1/" -Headers @{ apikey = $env:SUPABASE_SERVICE_ROLE_KEY } -UseBasicParsing -TimeoutSec 15 -SkipHttpErrorCheck
+              $code = [int]$response.StatusCode
+              # Cloudflare 530 means a dead tunnel. Only real HTTP answers count.
+              if ($code -ge 200 -and $code -lt 500) {
+                $ready = $true
+                Write-Host "Supabase ready after $i checks (HTTP $code)."
+                break
+              }
+            } catch { } # Cloudflare 530 or a timeout - keep waiting.
+            Start-Sleep -Seconds 10
+          }
+          if (-not $ready) { Write-Error '::error::Supabase never became ready'; exit 1 }
 
-          curl -fsS -X POST "$SUPABASE_URL/functions/v1/migrate" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H 'Content-Type: application/json' \
-            --data-binary @/tmp/catbox-schema.json
-          echo "Metadata schema applied (idempotent)."
+          Invoke-RestMethod -Method Post -Uri "$env:SUPABASE_URL/functions/v1/migrate" -Headers $headers -ContentType 'application/json' -Body $payload | Out-Null
+          Write-Host 'Metadata schema applied (idempotent).'
 
       - name: Seed Discord bot registry
+        shell: pwsh
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
         run: |
-          curl -fsS -X POST "$SUPABASE_URL/rest/v1/discord_bots" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H 'Content-Type: application/json' \
-            -H 'Prefer: return=minimal,resolution=merge-duplicates' \
-            -d "[{\"bot_id\":\"primary\",\"channel_id\":\"${DISCORD_CHANNEL_ID}\",\"enabled\":true,\"health\":\"unknown\"}]"
-          echo "Discord bot registry seeded."
+          $bot = @(@{
+            bot_id = 'primary'
+            channel_id = $env:DISCORD_CHANNEL_ID
+            enabled = $true
+            health = 'unknown'
+          })
+          $body = $bot | ConvertTo-Json -Compress -Depth 5
+          Invoke-RestMethod -Method Post -Uri "$env:SUPABASE_URL/rest/v1/discord_bots" `
+            -Headers @{
+              apikey = $env:SUPABASE_SERVICE_ROLE_KEY
+              Authorization = "Bearer $env:SUPABASE_SERVICE_ROLE_KEY"
+              Prefer = 'return=minimal,resolution=merge-duplicates'
+            } -ContentType 'application/json' -Body $body | Out-Null
+          Write-Host 'Discord bot registry seeded.'
 
       - name: Install cloudflared
+        shell: pwsh
         run: |
-          curl -fsSL --retry 3 -o cloudflared \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared
-          ./cloudflared --version
+          $dest = "$env:RUNNER_TEMP\cloudflared.exe"
+          Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' `
+            -OutFile $dest -UseBasicParsing -TimeoutSec 180
+          & $dest --version
 
       - name: Start control plane and keep alive
+        shell: pwsh
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
           PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
-          DISCORD_BOT_ID: primary
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -205,106 +318,120 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           MAX_FILE_SIZE: 20mb
-          TRUST_PROXY: 1
-        shell: bash
+          TRUST_PROXY: '1'
         run: |
-          server_log="$RUNNER_TEMP/server.log"
-          tunnel_log="$RUNNER_TEMP/tunnel.log"
-          : > "$server_log"
-          : > "$tunnel_log"
+          $serverLog = "$env:RUNNER_TEMP\server.log"
+          $serverErr = "$env:RUNNER_TEMP\server.err"
+          $tunnelLog = "$env:RUNNER_TEMP\tunnel.log"
+          $tunnelErr = "$env:RUNNER_TEMP\tunnel.err"
+          Set-Content -Path $serverLog -Value ''
+          Set-Content -Path $serverErr -Value ''
+          Set-Content -Path $tunnelLog -Value ''
+          Set-Content -Path $tunnelErr -Value ''
 
-          # The app reads process.env directly (no dotenv loader).
-          npm start > "$server_log" 2>&1 &
-          SERVER_PID=$!
-          ./cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN" \
-            > "$tunnel_log" 2>&1 &
-          TUNNEL_PID=$!
+          # The app reads process.env directly (no dotenv loader). Set the
+          # non-secret values here; secrets arrive via the step env block.
+          $env:PORT = '3000'
+          $env:STAGING_DIR = 'D:\catbox_staging'
+          $env:DATA_DIR = '.\data'
+          $env:FILE_DELIVERY = 'proxy'
+          $env:DISCORD_BOT_ID = 'primary'
 
-          cleanup() {
-            kill -TERM "$TUNNEL_PID" "$SERVER_PID" 2>/dev/null || true
-            for _ in $(seq 1 10); do
-              kill -0 "$SERVER_PID" 2>/dev/null || break
-              sleep 1
-            done
-            kill -KILL "$SERVER_PID" "$TUNNEL_PID" 2>/dev/null || true
+          $nodeExe = (Get-Command node).Source
+          $cloudflared = "$env:RUNNER_TEMP\cloudflared.exe"
+          $serverProc = Start-Process -FilePath $nodeExe -ArgumentList 'server.js' `
+            -WorkingDirectory $env:GITHUB_WORKSPACE -PassThru `
+            -RedirectStandardOutput $serverLog -RedirectStandardError $serverErr
+          $tunnelProc = Start-Process -FilePath $cloudflared `
+            -ArgumentList @('tunnel', '--no-autoupdate', 'run', '--token', $env:CF_TUNNEL_TOKEN) `
+            -PassThru -RedirectStandardOutput $tunnelLog -RedirectStandardError $tunnelErr
+
+          try {
+            # Readiness: local control plane AND the public tunnel URL.
+            $ready = $false
+            $deadline = (Get-Date).AddSeconds(180)
+            while ((Get-Date) -lt $deadline) {
+              if ($serverProc.HasExited) {
+                Write-Error "::error::Control plane exited before becoming ready"
+                Get-Content $serverLog, $serverErr -Tail 100 -ErrorAction SilentlyContinue
+                exit 1
+              }
+              if ($tunnelProc.HasExited) {
+                Write-Error "::error::cloudflared exited before becoming ready"
+                Get-Content $tunnelLog, $tunnelErr -Tail 100 -ErrorAction SilentlyContinue
+                exit 1
+              }
+              try {
+                $local = Invoke-WebRequest -Uri 'http://localhost:3000/api/config' -UseBasicParsing -TimeoutSec 5 -SkipHttpErrorCheck
+                $public = Invoke-WebRequest -Uri "$env:PUBLIC_BASE_URL/api/config" -UseBasicParsing -TimeoutSec 10 -SkipHttpErrorCheck
+                if ([int]$local.StatusCode -eq 200 -and [int]$public.StatusCode -eq 200) {
+                  $ready = $true
+                  break
+                }
+              } catch { } # Not ready yet.
+              Start-Sleep -Seconds 5
+            }
+            if (-not $ready) {
+              Write-Error '::error::Control plane did not become publicly ready in 180s'
+              Get-Content $serverLog, $serverErr -Tail 100 -ErrorAction SilentlyContinue
+              Get-Content $tunnelLog, $tunnelErr -Tail 100 -ErrorAction SilentlyContinue
+              exit 1
+            }
+
+            Write-Host '======================================='
+            Write-Host '        CATBOX CONTROL PLANE READY'
+            Write-Host '======================================='
+            Write-Host "  Session   : #$env:GITHUB_RUN_NUMBER"
+            if ($env:TS_IP) { Write-Host "  RDP       : $env:TS_IP (mstsc)" }
+            Write-Host "  Staging   : D:\catbox_staging"
+            Write-Host "  Upload API: $env:PUBLIC_BASE_URL/user/api.php"
+            Write-Host "  Metrics   : $env:PUBLIC_BASE_URL/api/metrics"
+            Write-Host "  Ops       : $env:PUBLIC_BASE_URL/ops"
+            Write-Host '======================================='
+
+            # Keep alive: stream logs, watch both processes, hold the session
+            # open. 330 min, not the 360 min job cap: a run killed by the cap
+            # never reaches SESSION_COMPLETE and would count as a failed link.
+            $end = (Get-Date).AddMinutes(330)
+            $serverLines = 0
+            $tunnelLines = 0
+            while ((Get-Date) -lt $end) {
+              if ($serverProc.HasExited) {
+                Write-Error "::error::Control plane exited unexpectedly (exit code $($serverProc.ExitCode))"
+                Get-Content $serverLog, $serverErr -Tail 200 -ErrorAction SilentlyContinue
+                exit 1
+              }
+              if ($tunnelProc.HasExited) {
+                Write-Error "::error::cloudflared exited unexpectedly (exit code $($tunnelProc.ExitCode))"
+                Get-Content $tunnelLog, $tunnelErr -Tail 200 -ErrorAction SilentlyContinue
+                exit 1
+              }
+
+              $all = @(Get-Content $serverLog -ErrorAction SilentlyContinue)
+              if ($all.Count -gt $serverLines) {
+                $all[$serverLines..($all.Count - 1)] | ForEach-Object { Write-Host $_ }
+                $serverLines = $all.Count
+              }
+              $all = @(Get-Content $tunnelLog -ErrorAction SilentlyContinue)
+              if ($all.Count -gt $tunnelLines) {
+                $all[$tunnelLines..($all.Count - 1)] | ForEach-Object { Write-Host $_ }
+                $tunnelLines = $all.Count
+              }
+
+              $code = 0
+              try {
+                $probe = Invoke-WebRequest -Uri "$env:PUBLIC_BASE_URL/api/config" -UseBasicParsing -TimeoutSec 10 -SkipHttpErrorCheck
+                $code = [int]$probe.StatusCode
+              } catch { } # Record HTTP 0 for this heartbeat.
+              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Catbox alive (PID $($serverProc.Id)) - HTTP $code"
+              Start-Sleep -Seconds 30
+            }
+
+            'SESSION_COMPLETE=true' | Out-File -FilePath $env:GITHUB_ENV -Append
+          } finally {
+            Stop-Process -Id $tunnelProc.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $serverProc.Id -Force -ErrorAction SilentlyContinue
           }
-          trap cleanup EXIT
-          trap 'cleanup; exit 130' INT TERM
-
-          # Readiness: local control plane AND the public tunnel URL.
-          ready=false
-          deadline=$((SECONDS + 180))
-          while (( SECONDS < deadline )); do
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              echo "::error::Control plane exited before becoming ready"
-              tail -n 100 "$server_log"
-              exit 1
-            fi
-            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
-              echo "::error::cloudflared exited before becoming ready"
-              tail -n 100 "$tunnel_log"
-              exit 1
-            fi
-            if curl -fsS http://localhost:3000/api/config >/dev/null 2>&1 \
-               && curl -fsS "$PUBLIC_BASE_URL/api/config" >/dev/null 2>&1; then
-              ready=true
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$ready" != "true" ]]; then
-            echo "::error::Control plane did not become publicly ready in 180s"
-            tail -n 100 "$server_log"
-            tail -n 100 "$tunnel_log"
-            exit 1
-          fi
-
-          echo "======================================="
-          echo "        CATBOX CONTROL PLANE READY"
-          echo "======================================="
-          echo "  Session   : #$GITHUB_RUN_NUMBER"
-          echo "  Upload API: $PUBLIC_BASE_URL/user/api.php"
-          echo "  Metrics   : $PUBLIC_BASE_URL/api/metrics"
-          echo "  Ops       : $PUBLIC_BASE_URL/ops"
-          echo "======================================="
-
-          # Keep alive: stream logs, watch both processes, hold the session open.
-          # 330 min, not the 360 min job cap: a run killed by the cap never
-          # reaches SESSION_COMPLETE and would count as a failed chain link.
-          end=$((SECONDS + 330 * 60))
-          s_lines=0
-          t_lines=0
-          while (( SECONDS < end )); do
-            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-              wait "$SERVER_PID" && code=0 || code=$?
-              echo "::error::Control plane exited unexpectedly (exit code $code)"
-              tail -n 200 "$server_log"
-              exit 1
-            fi
-            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
-              wait "$TUNNEL_PID" && code=0 || code=$?
-              echo "::error::cloudflared exited unexpectedly (exit code $code)"
-              tail -n 200 "$tunnel_log"
-              exit 1
-            fi
-
-            s_total=$(wc -l < "$server_log")
-            if (( s_total > s_lines )); then
-              sed -n "$((s_lines + 1)),${s_total}p" "$server_log"
-              s_lines=$s_total
-            fi
-            t_total=$(wc -l < "$tunnel_log")
-            if (( t_total > t_lines )); then
-              sed -n "$((t_lines + 1)),${t_total}p" "$tunnel_log"
-              t_lines=$t_total
-            fi
-
-            code=$(curl -sS -o /dev/null -w '%{http_code}' "$PUBLIC_BASE_URL/api/config" 2>/dev/null || echo 000)
-            echo "[$(date -u '+%Y-%m-%d %H:%M:%S') UTC] Catbox alive (PID $SERVER_PID) - HTTP $code"
-            sleep 30
-          done
-
-          echo "SESSION_COMPLETE=true" >> "$GITHUB_ENV"
 
       - name: Upload logs on failure
         if: failure()
@@ -313,7 +440,9 @@ jobs:
           name: catbox-logs-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/server.log
+            ${{ runner.temp }}/server.err
             ${{ runner.temp }}/tunnel.log
+            ${{ runner.temp }}/tunnel.err
           retention-days: 3
           if-no-files-found: ignore
 
@@ -321,58 +450,60 @@ jobs:
         # Healthy full keep-alive resets the counter; anything else counts up,
         # and once the budget is spent the chain stops with an alert.
         if: always()
-        shell: bash
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGERED_BY: ${{ inputs.triggered_by }}
           CHAIN_REF: ${{ github.event.repository.default_branch || github.ref_name }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
         run: |
-          n=0
-          if [[ "$TRIGGERED_BY" =~ ^session-chain:([0-9]{1,9})$ ]]; then
-            n="${BASH_REMATCH[1]}"
-          fi
-          max_retries=5
-          next=$((n + 1))
-          if [[ "${SESSION_COMPLETE:-}" == "true" ]]; then next=0; fi
+          $n = 0
+          if ($env:TRIGGERED_BY -match '^session-chain:(\d{1,9})$') { $n = [int]$Matches[1] }
+          $maxRetries = 5
+          $next = $n + 1
+          if ($env:SESSION_COMPLETE -eq 'true') { $next = 0 }
 
-          stop_reason=""
-          if (( next > max_retries )); then
-            stop_reason="$n sessions in a row ended early or never started"
-          else
-            body="$(jq -n --arg ref "$CHAIN_REF" --arg tb "session-chain:$next" \
-              '{ref: $ref, inputs: {triggered_by: $tb}}')"
-            queued=false
-            for attempt in 1 2 3; do
-              if curl -sS --fail-with-body -X POST \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github+json" \
-                  -H "X-GitHub-Api-Version: 2022-11-28" \
-                  -H "Content-Type: application/json" \
-                  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches" \
-                  -d "$body"; then
-                queued=true
+          $stopReason = ''
+          if ($next -gt $maxRetries) {
+            $stopReason = "$n sessions in a row ended early or never started"
+          } else {
+            $body = @{
+              ref = $env:CHAIN_REF
+              inputs = @{ triggered_by = "session-chain:$next" }
+            } | ConvertTo-Json -Compress -Depth 5
+            $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches"
+            $headers = @{
+              Authorization = "Bearer $env:GH_TOKEN"
+              Accept = 'application/vnd.github+json'
+              'X-GitHub-Api-Version' = '2022-11-28'
+            }
+            $queued = $false
+            foreach ($attempt in 1..3) {
+              try {
+                Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+                $queued = $true
                 break
-              fi
-              echo "::warning::Dispatch attempt $attempt failed."
-              if (( attempt < 3 )); then sleep 15; fi
-            done
-            if [[ "$queued" == "true" ]]; then
-              echo "Successor queued for $CHAIN_REF (retry $next/$max_retries)."
+              } catch {
+                Write-Warning "Dispatch attempt $attempt failed: $($_.Exception.Message)"
+                if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+              }
+            }
+            if ($queued) {
+              Write-Host "Successor queued for $env:CHAIN_REF (retry $next/$maxRetries)."
               exit 0
-            fi
-            stop_reason="GitHub refused the dispatch (see warnings above)"
-          fi
+            }
+            $stopReason = 'GitHub refused the dispatch (see warnings above)'
+          }
 
-          echo "::error::Session chain stopped: $stop_reason. Bot is down until a run is started."
-          if [[ -n "${ALERT_WEBHOOK_URL:-}" ]]; then
-            payload="$(jq -n --arg c ":warning: **catbox-bot** session chain stopped: $stop_reason. Start a run: https://github.com/$GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml" '{content: $c}')"
-            if curl -sS --fail-with-body -X POST -H "Content-Type: application/json" \
-                -d "$payload" "$ALERT_WEBHOOK_URL"; then
-              echo "Discord alert sent."
-            else
-              echo "::warning::Discord alert failed."
-            fi
-          else
-            echo "::warning::ALERT_WEBHOOK_URL not set - no Discord alert sent."
-          fi
+          Write-Error "::error::Session chain stopped: $stopReason. Bot is down until a run is started."
+          if (-not [string]::IsNullOrWhiteSpace($env:ALERT_WEBHOOK_URL)) {
+            $content = ":warning: **catbox-bot** session chain stopped: $stopReason. Start a run: https://github.com/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml"
+            $payload = @{ content = $content } | ConvertTo-Json -Compress
+            try {
+              Invoke-RestMethod -Method Post -Uri $env:ALERT_WEBHOOK_URL -ContentType 'application/json' -Body $payload | Out-Null
+              Write-Host 'Discord alert sent.'
+            } catch {
+              Write-Warning 'Discord alert failed.'
+            }
+          } else {
+            Write-Warning 'ALERT_WEBHOOK_URL not set - no Discord alert sent.'
+          }

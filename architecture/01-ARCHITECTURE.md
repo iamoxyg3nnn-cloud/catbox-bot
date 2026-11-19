@@ -21,9 +21,9 @@ Replace the clone's flat local-file byte storage (`data/files`) with **Discord a
 | URL refresh | `GET /channels/{channel_id}/messages?around={message_id}&limit=1`. | Documented; returns freshly signed URLs. Avoids undocumented `POST /attachments/refresh-urls`. |
 | Deletion | `DELETE /channels/{channel_id}/messages/{message_id}` with the *same bot* that uploaded. | Documented and removes the attachment. |
 | Public upload router | **Cloudflare Worker proxy** (`workers/catbox-router`), not 307 redirect. | Free plan allows 100 MB bodies; single origin, no CORS exposure of node tunnels, allows auth/quota/node selection before forwarding. |
-| Staging | `D:\catbox_staging\<job_id>` on the existing Windows RDP nodes (node-1..node-18). | 150+ GB per node; already have Gin server, Cloudflare tunnel, heartbeats, upload queues, journal/orphan recovery. |
+| Staging | `D:\catbox_staging\<job_id>` on the Windows runner hosting the control plane. | Each `windows-latest` GitHub runner has a ~150 GiB ephemeral D: drive. Tailscale/RDP expose it interactively but provide **no** storage and no durability; the body stays until Discord confirms, then is deleted. |
 | Metadata | Separate cloned Supabase (Postgres) + Redis stack, **not** the existing project's Supabase. | User requirement; avoids cross-project interference. |
-| Control plane | Express API in a self-chaining GitHub Actions session behind Cloudflare Tunnel. Frontend on Vercel/Cloudflare Pages. | Reuses the user's proven `Supabase-Actions` pattern; public repos keep Actions free. |
+| Control plane | Express API in a self-chaining **Windows** GitHub Actions session behind Cloudflare Tunnel, with optional Tailscale RDP. Frontend on Vercel. | Reuses the user's proven `Supabase-Actions` pattern; public repos keep Actions free. D: staging lives on this same runner. |
 | Scaling | 20 bots × 50 req/s = ~1,000 req/s theoretical ceiling; real throughput lower. Queue + per-user quotas mandatory. | `X-RateLimit-*` and `Retry-After` must be parsed, never hardcoded. |
 | ToS risk | Accepted for personal/experimental use. Multi-bot sharding must not be publicly marketed as a bypass. | Discord Developer Policy forbids circumventing limits; multiple legitimate bot apps are normal, but mass sharding is gray. |
 

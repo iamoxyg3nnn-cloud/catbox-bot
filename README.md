@@ -26,7 +26,8 @@ Optional environment variables:
 | Variable             | Default              | Purpose                                                   |
 | -------------------- | -------------------- | --------------------------------------------------------- |
 | `PORT`               | `3000`               | HTTP port                                                 |
-| `DATA_DIR`           | `./data`             | SQLite DB and in-flight upload temp files (not byte store) |
+| `DATA_DIR`           | `./data`             | SQLite DB (not byte store)                                |
+| `STAGING_DIR`        | `<DATA_DIR>/tmp`     | Local disk for in-flight upload bodies (production: `D:\catbox_staging`) |
 | `PUBLIC_BASE_URL`    | request origin       | Override the base URL returned in API responses           |
 | `TRUST_PROXY`        | unset                | Set to `1` behind a reverse proxy                        |
 | `MAX_FILE_SIZE`      | `20mb`               | Per-file limit (bytes or `20mb` / `20MiB`)                 |
@@ -203,6 +204,26 @@ scripts/loadgen.js       Synthetic async-upload load generator (no Discord neede
 scripts/verify-discord.js  Live one-bot-or-20-bot Discord verification (needs real tokens)
 ```
 
+## Deployment
+
+The production workflow (`.github/workflows/catbox-bot.yml`) runs on a
+`windows-latest` GitHub-hosted runner. It is dispatched only by other runs via
+a `catbox-session` concurrency chain; there is no cron schedule. Each session:
+
+- stages upload bodies on the runner's local `D:\catbox_staging` (~150 GiB of
+  ephemeral disk). A body stays there while Discord receives it and is deleted
+  only after Discord confirms the attachment and Supabase records the metadata;
+  a failed Discord upload is retried from the same local file;
+- exposes the session over **Tailscale** for operator RDP when the
+  `TAILSCALE_AUTH_KEY` secret is set (Tailscale gives network access only, not
+  storage); RDP failure never stops the control plane;
+- starts `node server.js` and a named Cloudflare tunnel, waits for both the
+  local and public `/api/config` to answer, then holds the session for 330
+  minutes before queueing a healthy successor.
+
+Supabase + Redis remain in the separate, unmodified `mew-pocket/Supabase-Actions`
+repository with their own tunnel. This repository owns only the control plane.
+
 ## Notes and limits
 
 - Anonymous uploads are permanent; Litterbox uploads carry an expiry timestamp
@@ -215,9 +236,11 @@ scripts/verify-discord.js  Live one-bot-or-20-bot Discord verification (needs re
   (see `architecture/03-PROGRESS.md`).
 - The browser reads `/api/config` so its client-side check follows the server
   limit; the server always remains authoritative.
-- No production code path writes permanent bytes to local disk. `data/tmp`
-  holds only in-flight request bodies, which are removed after the Discord
-  upload completes.
+- No production code path writes permanent bytes to local disk. `<DATA_DIR>/tmp`
+  (or `STAGING_DIR`, i.e. `D:\catbox_staging` in production) holds only in-flight
+  request bodies, which are removed after the Discord upload completes. The
+  runner's D: drive is transient: when a session ends, any still-staged body is
+  gone and its job fails terminally instead of being silently retried forever.
 - Executables are rejected: the extensions in `config.blockedExtensions`
   (`.exe`, `.scr`, and configured document types) plus the `application/exe` /
   `application/x-msdownload` MIME types.
