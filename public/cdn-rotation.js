@@ -76,6 +76,12 @@
     };
   }
 
+  // `catsess` is HttpOnly, but `userhash` is set in the same response only for
+  // signed-in users, so it is a safe JS-visible signal for "has a session".
+  function hasSession() {
+    return /(?:^|;\s*)userhash=[^;]+/.test(document.cookie);
+  }
+
   function bucket() {
     let seed;
     try { seed = sessionStorage.getItem(STICKY_KEY); } catch { seed = null; }
@@ -146,6 +152,11 @@
     paint();
 
     if (!allowRedirect || !target || target.origin === location.origin) return;
+    // Session cookies are scoped to one origin. Steering an account page (or
+    // any page for a signed-in user) to the other edge drops `catsess`, so
+    // /api/dashboard answers 401 and app.js sends the user back to login.
+    // Only anonymous home-page visits may be steered automatically.
+    if (location.pathname !== '/' || hasSession()) return;
     let redirected;
     try { redirected = sessionStorage.getItem(REDIRECT_KEY); } catch { redirected = null; }
     if (redirected) return;          // one steering decision per tab session
