@@ -148,3 +148,53 @@ test('resolve uses the documented around-message fetch and remove deletes the me
     global.fetch = originalFetch;
   }
 });
+
+test('upload fails over to a sibling bot on 403 instead of failing the user', async () => {
+  const originalFetch = global.fetch;
+  const staged = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'discord-test-')), 'failover.txt');
+  fs.writeFileSync(staged, 'failover body');
+  const fleet = {
+    discord: {
+      ...config.discord,
+      bots: [
+        { id: 'dead-bot', token: 'dead-token', channelId: 'channel-1' },
+        { id: 'live-bot', token: 'live-token', channelId: 'channel-1' },
+      ],
+    },
+  };
+  const calls = [];
+  global.fetch = async (url, init) => {
+    calls.push(init.headers.Authorization);
+    if (init.headers.Authorization === 'Bot dead-token') return response(403, { message: 'Missing Permissions' });
+    return response(200, { id: '2000', attachments: [{ id: '800', url: 'https://cdn.test/failover' }] });
+  };
+  try {
+    const storage = new DiscordStorage(fleet);
+    const meta = await storage.upload({ filePath: staged, originalName: 'failover.txt', mime: 'text/plain' });
+    assert.equal(meta.botId, 'live-bot');
+    assert.deepEqual(calls, ['Bot dead-token', 'Bot live-token']);
+    assert.equal(storage.health.get('dead-bot').up, false);
+    assert.equal(storage.health.get('live-bot').up, true);
+  } finally {
+    global.fetch = originalFetch;
+    fs.rmSync(path.dirname(staged), { recursive: true, force: true });
+  }
+});
+
+test('a retired bot rejoins rotation after its backoff expires', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => response(403, { message: 'Forbidden' });
+  try {
+    const storage = new DiscordStorage(config);
+    await assert.rejects(() => storage.upload({
+      filePath: __filename, originalName: 'x.txt', mime: 'text/plain',
+    }));
+    assert.equal(storage.health.get('bot-1').up, false);
+    assert.throws(() => storage.pickBot(), /No healthy Discord bots/);
+    // Simulate the backoff elapsing; the bot should be retried on probation.
+    storage.health.get('bot-1').retryAt = Date.now() - 1;
+    assert.equal(storage.pickBot().id, 'bot-1');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

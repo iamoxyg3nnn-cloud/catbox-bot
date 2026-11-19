@@ -11,6 +11,12 @@ const cache = require('../cache');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// A bot that returns 401/403 is retired from rotation with exponential backoff
+// instead of permanently. This lets a bot rejoin automatically once it has
+// been invited to the guild / granted channel permissions, without a redeploy.
+const HEALTH_RETRY_BASE_MS = 60_000;
+const HEALTH_RETRY_MAX_MS = 60 * 60_000;
+
 // Serialises requests through one bucket and tracks Discord's response headers.
 // Bucket sizes are deliberately not hardcoded: we only trust X-RateLimit-*.
 class Bucket {
@@ -71,7 +77,7 @@ class DiscordStorage {
   constructor(config) {
     this.config = config;
     this.bots = config.discord.bots || [];
-    this.health = new Map(this.bots.map(b => [b.id, true]));
+    this.health = new Map(this.bots.map(b => [b.id, { up: true, fails: 0, retryAt: 0 }]));
     this.cursor = 0;
     this.buckets = new Map();
     // Cumulative counters exported through /api/metrics. No tokens or paths.
@@ -96,7 +102,14 @@ class DiscordStorage {
   }
 
   pickBot() {
-    const alive = this.bots.filter(b => this.health.get(b.id) !== false);
+    const now = Date.now();
+    const alive = this.bots.filter(b => {
+      const h = this.health.get(b.id) || { up: true, fails: 0, retryAt: 0 };
+      // Put a retired bot back on probation once its backoff has elapsed. If it
+      // is still broken it is retired again with a longer delay.
+      if (!h.up && now >= h.retryAt) h.up = true;
+      return h.up;
+    });
     if (!alive.length) throw new Error('No healthy Discord bots configured.');
     const bot = alive[this.cursor % alive.length];
     this.cursor += 1;
@@ -156,7 +169,19 @@ class DiscordStorage {
           continue;
         }
 
-        if (response.status === 401 || response.status === 403) this.health.set(bot.id, false);
+        const health = this.health.get(bot.id);
+        if (response.status === 401 || response.status === 403) {
+          if (health) {
+            health.up = false;
+            health.fails = Math.min((health.fails || 0) + 1, 6);
+            health.retryAt = Date.now()
+              + Math.min(HEALTH_RETRY_BASE_MS * 2 ** (health.fails - 1), HEALTH_RETRY_MAX_MS);
+          }
+        } else if (health && response.ok && health.fails) {
+          health.up = true;
+          health.fails = 0;
+          health.retryAt = 0;
+        }
         return response;
       } finally {
         if (releaseChannel) releaseChannel();
@@ -202,30 +227,50 @@ class DiscordStorage {
   }
 
   async upload({ filePath, originalName, mime, idempotencyKey }) {
-    const bot = this.pickBot();
-    const { body, contentType } = this.buildMultipart(filePath, originalName, mime, idempotencyKey);
-    const response = await this.request(
-      bot,
-      'POST',
-      `/channels/${bot.channelId}/messages?wait=true`,
-      { body, contentType }
-    );
-    if (!response.ok) {
-      const detail = (await response.text()).slice(0, 500);
-      throw new Error(`Discord upload failed (${response.status}): ${detail}`);
+    const attempted = new Set();
+    let lastError;
+    // Fail over within the same upload when a bot is missing from the guild or
+    // lacks channel permissions. Without this, the first upload after every
+    // session restart would fail for each dead bot in the fleet.
+    for (let i = 0; i < this.bots.length; i++) {
+      let bot;
+      try {
+        bot = this.pickBot();
+      } catch {
+        break;
+      }
+      if (attempted.has(bot.id)) break;
+      attempted.add(bot.id);
+
+      const { body, contentType } = this.buildMultipart(filePath, originalName, mime, idempotencyKey);
+      const response = await this.request(
+        bot,
+        'POST',
+        `/channels/${bot.channelId}/messages?wait=true`,
+        { body, contentType }
+      );
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        lastError = new Error(`Discord upload failed (${response.status}): ${detail}`);
+        // request() has already retired this bot on 401/403, so the next
+        // pickBot() chooses a sibling. Other errors are not a bot problem.
+        if (response.status === 401 || response.status === 403) continue;
+        throw lastError;
+      }
+      const message = await response.json();
+      const attachment = (message.attachments || [])[0];
+      if (!attachment) throw new Error('Discord response contained no attachment.');
+      return {
+        botId: bot.id,
+        channelId: bot.channelId,
+        messageId: String(message.id),
+        attachmentId: String(attachment.id),
+        cdnUrl: attachment.url,
+        cdnExpiresAt: expiryFromUrl(attachment.url),
+        status: 'ready',
+      };
     }
-    const message = await response.json();
-    const attachment = (message.attachments || [])[0];
-    if (!attachment) throw new Error('Discord response contained no attachment.');
-    return {
-      botId: bot.id,
-      channelId: bot.channelId,
-      messageId: String(message.id),
-      attachmentId: String(attachment.id),
-      cdnUrl: attachment.url,
-      cdnExpiresAt: expiryFromUrl(attachment.url),
-      status: 'ready',
-    };
+    throw lastError || new Error('No healthy Discord bots configured.');
   }
 
   async resolve(row) {

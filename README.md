@@ -222,8 +222,10 @@ a `catbox-session` concurrency chain; there is no cron schedule. Each session:
   minutes before queueing a healthy successor;
 - builds `DISCORD_BOTS` from `DISCORD_BOT_TOKEN` and `DISCORD_BOT_2_TOKEN` …
   `DISCORD_BOT_5_TOKEN`, all posting to `DISCORD_CHANNEL_ID`. The storage layer
-  rotates through the fleet and drops a bot from rotation after a 401/403, and
-  the same fleet is seeded into the `discord_bots` table for the admin console.
+  rotates through the fleet, fails over within a single upload when a bot
+  returns 401/403, and retires that bot with exponential backoff until it is
+  fixed in Discord (then it rejoins automatically). The same fleet is seeded
+  into the `discord_bots` table for the admin console.
   Every bot must be invited to the Discord server and allowed to post, read and
   delete in that channel; bot tokens cannot grant themselves those permissions.
 
