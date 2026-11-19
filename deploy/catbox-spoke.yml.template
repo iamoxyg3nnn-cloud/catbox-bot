@@ -99,8 +99,10 @@ jobs:
         run: |
           # This spoke owns exactly one bot. PUBLIC_BASE_URL is the HUB origin so
           # generated file links point at the public API, not this tunnel.
-          $bots = @(@{ id = '__NODE_ID__'; token = $env:DISCORD_BOT_TOKEN; channelId = $env:DISCORD_CHANNEL_ID })
-          $botsJson = $bots | ConvertTo-Json -Compress -Depth 5
+          # Node ids are bot-N (hub registry), but the Discord id must match the
+          # hub's bot ids so the hub can resolve files uploaded by this spoke.
+          $bots = @(@{ id = '__DISCORD_BOT_ID__'; token = $env:DISCORD_BOT_TOKEN; channelId = $env:DISCORD_CHANNEL_ID })
+          $botsJson = ConvertTo-Json -InputObject $bots -Compress -Depth 5
 
           @"
           PORT=3000
@@ -113,7 +115,7 @@ jobs:
           STAGING_DIR=D:\catbox_staging
           MAX_FILE_SIZE=20mb
           FILE_DELIVERY=proxy
-          DISCORD_BOT_ID=__NODE_ID__
+          DISCORD_BOT_ID=__DISCORD_BOT_ID__
           DISCORD_BOTS=$botsJson
           DISCORD_CHANNEL_ID=$env:DISCORD_CHANNEL_ID
           SUPABASE_URL=$env:SUPABASE_URL
@@ -158,6 +160,7 @@ jobs:
         env:
           PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
           CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -171,7 +174,7 @@ jobs:
           $env:STAGING_DIR = 'D:\catbox_staging'
           $env:DATA_DIR = '.\data'
           $env:FILE_DELIVERY = 'proxy'
-          $env:DISCORD_BOT_ID = '__NODE_ID__'
+          $env:DISCORD_BOT_ID = '__DISCORD_BOT_ID__'
           $env:MAX_FILE_SIZE = '20mb'
           $env:TRUST_PROXY = '1'
 
@@ -235,7 +238,8 @@ jobs:
                 $local = Invoke-WebRequest -Uri 'http://localhost:3000/api/config' -UseBasicParsing -TimeoutSec 5 -SkipHttpErrorCheck
                 if ([int]$local.StatusCode -eq 200) {
                   $nodes = Invoke-RestMethod -Uri "$env:CONTROL_PLANE_URL/api/nodes" -TimeoutSec 10
-                  $found = @($nodes | Where-Object { $_.id -eq '__NODE_ID__' -and $_.status -eq 'up' })
+                  $list = if ($nodes -and $nodes.nodes) { $nodes.nodes } else { @($nodes) }
+                  $found = @($list | Where-Object { $_.id -eq '__NODE_ID__' -and $_.status -eq 'up' })
                   if ($found.Count -gt 0) { $ready = $true; break }
                 }
               } catch { } # Not ready yet.
