@@ -349,6 +349,7 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           MAX_FILE_SIZE: 20mb
+          UPLOAD_MAX_PER_MIN: ${{ vars.UPLOAD_MAX_PER_MIN || '40' }}
           TRUST_PROXY: '1'
         run: |
           $serverLog = "$env:RUNNER_TEMP\server.log"

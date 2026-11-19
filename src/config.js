@@ -115,8 +115,13 @@ const config = {
   // Contact address shown on the contact page.
   contactEmail: process.env.CONTACT_EMAIL || 'admin@localhost',
 
-  // Coarse per-IP upload throttle (window -> max upload requests).
-  rateLimit: { windowMs: 60 * 1000, maxUploads: 40 },
+  // Coarse per-IP upload throttle (window -> max upload requests). Tunable so
+  // operators can raise it for a controlled load test; production default stays
+  // at 40/min to keep a single abusive source from saturating a runner.
+  rateLimit: {
+    windowMs: 60 * 1000,
+    maxUploads: Math.max(1, parseInt(process.env.UPLOAD_MAX_PER_MIN || '40', 10)),
+  },
 
   // Recovery knobs for uploads that are interrupted mid-flight. A job left in
   // `uploading` past staleAfterMs is assumed abandoned by a dead process and is
