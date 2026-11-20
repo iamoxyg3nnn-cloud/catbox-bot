@@ -1,4 +1,27 @@
-/* Hallmark · pre-emit critique: P5 H5 E4 S4 R4 V5 */
+﻿/* Hallmark Ã‚Â· pre-emit critique: P5 H5 E4 S4 R4 V5 */
+(() => {
+  'use strict';
+
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const app = $('#app');
+
+  // Upload ceiling mirrors the server's MAX_FILE_SIZE (default 20 MiB). The
+  // server remains authoritative; this only gives the browser early feedback.
+  let MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+  let BATCH_CONCURRENCY = 5;
+  let BATCH_ADAPTIVE = false;
+  fetch('/api/config', { signal: AbortSignal.timeout(5000) })
+    .then(response => response.ok ? response.json() : null)
+    .then(cfg => {
+      if (!cfg) return;
+      if (Number(cfg.maxFileSize) > 0) MAX_UPLOAD_BYTES = Number(cfg.maxFileSize);
+      if (Number(cfg.batchConcurrency) > 0) BATCH_CONCURRENCY = Math.min(16, Number(cfg.batchConcurrency));
+      BATCH_ADAPTIVE = Boolean(cfg.adaptiveBatches);
+    })
+    .catch(() => {});
+
+  // Short, resumable chunk uploader. Each request is at most 4 MiB and has its
+  // own deadline, so a slow link canno/* Hallmark Ã‚Â· pre-emit critique: P5 H5 E4 S4 R4 V5 */
 (() => {
   'use strict';
 
@@ -29,8 +52,21 @@
     return signal;
   }
   // Attach HTTP status / Retry-After so the queue can tell a 429 from a 413.
+  function friendlyServerMessage(message, response) {
+    const status = response && typeof response === 'object' ? response.status : response;
+    const text = String(message == null ? '' : message);
+    const looksHtml = /^\s*<!doctype/i.test(text) || /^\s*<html/i.test(text) || /<html[\s>]/i.test(text);
+    const isCloudflare = /cloudflare|error 1033|tunnel error|cdn-cgi|ray id/i.test(text);
+    if (status === 530 || status === 502 || status === 503 || status === 504 || status === 521 || status === 522 || status === 523 || status === 524 || (looksHtml && (isCloudflare || Number(status) >= 500))) {
+      return 'Server is down. Please wait for it and try again.';
+    }
+    if (looksHtml && text.length > 120) {
+      return 'Server is down. Please wait for it and try again.';
+    }
+    return text || message;
+  }
   function uploadError(message, response) {
-    const error = new Error(message);
+    const error = new Error(friendlyServerMessage(message, response));
     if (response) {
       error.status = response.status;
       const header = response.headers.get('Retry-After');
@@ -118,7 +154,7 @@
     if (session.url) return { session, job: null };
     // Each successful PUT returns the new offset, so only a resumed session
     // needs a status probe. Removing the per-chunk GET cuts ~500 requests from
-    // a 100 × 20 MiB batch.
+    // a 100 Ãƒâ€” 20 MiB batch.
     let received = 0;
     if (existing) {
       const probe = await fetch(`/api/uploads/${session.uploadId}`, {
@@ -262,7 +298,7 @@
       ? '<a href="/user/index.php">My files</a><a href="/user/albums.php">Albums</a>'
       : '<a href="/user/login.php">Sign in</a><a href="/user/register.php">Create account</a>';
     const links = `${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Legal / Privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button>`;
-    return `<div class="classic-home ${temporary ? 'is-temporary' : ''}"><main id="main" class="classic-main"><section class="classic-uploader" aria-label="Upload a file"><div class="upload-panel" id="panel-file"><label class="dropzone" id="dropzone" for="file-input"><input class="file-picker" id="file-input" type="file" multiple aria-label="Select one or more files to upload"><span class="dropzone-title">Select or drop a file</span><span class="dropzone-hint">or tap to choose from your device · 20 MB max</span><span class="upload-file-name" id="file-name"></span></label></div><div class="urlUploads"><p><button class="classic-link" id="tab-url" type="button" aria-expanded="false" aria-controls="url-form">Upload via URL</button></p><form class="url-form" id="url-form" hidden><label class="field-label" for="file-url">Paste a direct file link</label><div class="url-input-row"><input class="field" id="file-url" name="url" type="url" placeholder="https://example.com/file.png" required><button class="classic-go" type="submit">Upload</button></div><button class="classic-link" id="tab-file-return" type="button" aria-expanded="false">Choose a file instead</button></form></div>${temporary ? '<div class="classic-expiry"><label for="expiry">Remove after</label><select id="expiry" class="select-small"><option value="1h">1 hour</option><option value="12h">12 hours</option><option value="24h" selected>24 hours</option><option value="72h">72 hours</option></select><small class="field-hint">The link works until this time, then the file is removed.</small></div>' : ''}<div class="upload-status" id="upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="progress-track" hidden><span id="progress-bar"></span></div><div id="upload-result"></div></section><nav class="classic-nav" aria-label="Main navigation">${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Terms &amp; privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button></nav><details class="mobile-nav"><summary>Menu</summary><nav aria-label="Mobile navigation">${links}</nav></details><section class="classic-support"><p><strong>Simple file sharing, with clear limits.</strong></p><div class="classic-support-links"><a href="/faq.php">How uploads work</a><a href="/tools.php">Upload options</a><a href="/user/register.php">Create an account</a></div><div class="classic-support-bar"><span>Up to 20 MB · No account required</span></div></section><section class="classic-notice"><b>Need a temporary link?</b><br><a href="/litterbox.php">Use temporary uploads</a> to choose when the file expires.</section><p class="classic-privacy-note">${temporary ? 'Anyone with a temporary link can open the file until it expires.' : 'Anyone with a file link can open it. Sign in before uploading if you want to manage the file later.'}</p><footer class="legacy-footer"><a href="/contact.php">Contact</a></footer></main></div>`;
+    return `<div class="classic-home ${temporary ? 'is-temporary' : ''}"><main id="main" class="classic-main"><section class="classic-uploader" aria-label="Upload a file"><div class="upload-panel" id="panel-file"><label class="dropzone" id="dropzone" for="file-input"><input class="file-picker" id="file-input" type="file" multiple aria-label="Select one or more files to upload"><span class="dropzone-title">Select or drop a file</span><span class="dropzone-hint">or tap to choose from your device Ã‚Â· 20 MB max</span><span class="upload-file-name" id="file-name"></span></label></div><div class="urlUploads"><p><button class="classic-link" id="tab-url" type="button" aria-expanded="false" aria-controls="url-form">Upload via URL</button></p><form class="url-form" id="url-form" hidden><label class="field-label" for="file-url">Paste a direct file link</label><div class="url-input-row"><input class="field" id="file-url" name="url" type="url" placeholder="https://example.com/file.png" required><button class="classic-go" type="submit">Upload</button></div><button class="classic-link" id="tab-file-return" type="button" aria-expanded="false">Choose a file instead</button></form></div>${temporary ? '<div class="classic-expiry"><label for="expiry">Remove after</label><select id="expiry" class="select-small"><option value="1h">1 hour</option><option value="12h">12 hours</option><option value="24h" selected>24 hours</option><option value="72h">72 hours</option></select><small class="field-hint">The link works until this time, then the file is removed.</small></div>' : ''}<div class="upload-status" id="upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="progress-track" hidden><span id="progress-bar"></span></div><div id="upload-result"></div></section><nav class="classic-nav" aria-label="Main navigation">${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Terms &amp; privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button></nav><details class="mobile-nav"><summary>Menu</summary><nav aria-label="Mobile navigation">${links}</nav></details><section class="classic-support"><p><strong>Simple file sharing, with clear limits.</strong></p><div class="classic-support-links"><a href="/faq.php">How uploads work</a><a href="/tools.php">Upload options</a><a href="/user/register.php">Create an account</a></div><div class="classic-support-bar"><span>Up to 20 MB Ã‚Â· No account required</span></div></section><section class="classic-notice"><b>Need a temporary link?</b><br><a href="/litterbox.php">Use temporary uploads</a> to choose when the file expires.</section><p class="classic-privacy-note">${temporary ? 'Anyone with a temporary link can open the file until it expires.' : 'Anyone with a file link can open it. Sign in before uploading if you want to manage the file later.'}</p><footer class="legacy-footer"><a href="/contact.php">Contact</a></footer></main></div>`;
   }
 
   function initHomeLayout() {
@@ -362,7 +398,7 @@
       title: 'Frequently asked questions', eyebrow: 'HELP & HOW-TO',
       intro: 'Clear answers about uploads, links, accounts, temporary files, and privacy.',
       body: `<section class="faq-section"><h2>Uploading</h2>
-        <article class="faq-item"><h3>How do I upload a file?</h3><p>On the <a href="/">upload page</a>, select a file or drag one onto the upload area. You can also choose <strong>Upload via URL</strong> and paste a direct HTTP or HTTPS link. When the upload finishes, you’ll get a link you can copy and share.</p></article>
+        <article class="faq-item"><h3>How do I upload a file?</h3><p>On the <a href="/">upload page</a>, select a file or drag one onto the upload area. You can also choose <strong>Upload via URL</strong> and paste a direct HTTP or HTTPS link. When the upload finishes, youÃ¢â‚¬â„¢ll get a link you can copy and share.</p></article>
         <article class="faq-item"><h3>Do I need an account?</h3><p>No. You can upload without signing in. If you want files listed in a personal library and available for deletion, sign in before uploading. Files uploaded while signed out are not attached to an account.</p></article>
         <article class="faq-item"><h3>What is the file size limit?</h3><p>Each file can be up to 20 MB. The same limit applies to files fetched from a URL. Files over the limit are rejected before they are saved.</p></article>
         <article class="faq-item"><h3>Which file types are blocked?</h3><p>The service blocks <code>.exe</code>, <code>.scr</code>, <code>.doc</code>, and <code>.jar</code> files. If a file is refused, choose a permitted file type instead; changing a filename extension does not make unsafe content safe.</p></article>
@@ -375,7 +411,7 @@
         <article class="faq-item"><h3>How do temporary uploads work?</h3><p>Open <a href="/litterbox.php">Temporary uploads</a>, choose an expiry of 1, 12, 24, or 72 hours, then upload a file or a direct URL. The service removes the file after its expiry time. Expiry is a cleanup setting, not a privacy control while the link is active.</p></article>
         <article class="faq-item"><h3>Can I delete a file?</h3><p>Sign in before uploading. In <a href="/user/index.php">My files</a>, use the delete control beside a file you own. Deleting the file also makes its existing link stop working. Signed-out uploads cannot be deleted from the current interface.</p></article>
       </section><section class="faq-section"><h2>Accounts and albums</h2>
-        <article class="faq-item"><h3>What do I need to create an account?</h3><p>Choose a username with 3–25 letters, numbers, or underscores, enter a valid email address, and use a password of at least 8 characters. Sign in before uploading so files are associated with your library.</p></article>
+        <article class="faq-item"><h3>What do I need to create an account?</h3><p>Choose a username with 3Ã¢â‚¬â€œ25 letters, numbers, or underscores, enter a valid email address, and use a password of at least 8 characters. Sign in before uploading so files are associated with your library.</p></article>
         <article class="faq-item"><h3>I forgot my password. Can I reset it?</h3><p>Self-service password reset is not configured in this build. Use the <a href="/contact.php">contact form</a> to ask the site operator for help. The form records a message locally; it does not send email automatically.</p></article>
         <article class="faq-item"><h3>What is an album?</h3><p>An album groups files from your account into one shareable page. Open <a href="/user/albums.php">Albums</a>, create an album, add a title, optionally add a description, then select one or more files. Anyone with the album link can view its contents.</p></article>
       </section>`
@@ -394,7 +430,7 @@
       intro: 'What this version stores, how sharing works, and what to consider before uploading.',
       body: `<p class="policy-note"><strong>About this page.</strong> This page describes the current service behavior. The site operator should review and adapt it for their jurisdiction, hosting setup, and actual retention practices before offering the service publicly.</p>
         <p class="policy-note"><strong>Experimental storage.</strong> File bytes are stored as Discord message attachments and delivered through signed CDN links. Local disk is transient staging only. Availability depends on Discord, and this service is not a backup or a private vault.</p>
-        <section class="policy-section"><h2>Using the service</h2><p>Only upload files you have the right to store and share. Do not use this service to distribute unlawful material, malware, files that violate another person’s rights, or content intended to harm others. The operator may disable access to the service or remove material where required to protect users, rights holders, or the service.</p><p>You are responsible for the files you upload and for choosing who receives their links. A successful upload does not establish that you have permission to distribute the file.</p></section>
+        <section class="policy-section"><h2>Using the service</h2><p>Only upload files you have the right to store and share. Do not use this service to distribute unlawful material, malware, files that violate another personÃ¢â‚¬â„¢s rights, or content intended to harm others. The operator may disable access to the service or remove material where required to protect users, rights holders, or the service.</p><p>You are responsible for the files you upload and for choosing who receives their links. A successful upload does not establish that you have permission to distribute the file.</p></section>
         <section class="policy-section"><h2>Links and public access</h2><p>A direct file link is a bearer link: anyone who obtains it can open the file. Links have no password or viewer-specific access control. The service does not provide a public file-search page, but that is not a confidentiality guarantee. Do not upload confidential, sensitive, or irreplaceable material.</p><p>Album pages are also available to anyone with the album URL. Adding a file to an album makes it part of that page until you change or remove it.</p></section>
         <section class="policy-section"><h2>Storage, expiry, and deletion</h2><p>Regular uploads do not have an automatic expiry in this version. Signed-in users can delete files attached to their account from My files. A file uploaded while signed out is not attached to an owner and cannot currently be deleted through the website.</p><p>Temporary uploads are removed after the selected 1, 12, 24, or 72 hour period. The link remains accessible while the file is present. Temporary expiry is not an access restriction.</p><p>The operator controls the server and its backups. Removing an item from the live service does not describe how long copies may remain in external backups or infrastructure managed by the operator.</p></section>
         <section class="policy-section"><h2>Information stored by the application</h2><ul><li><strong>Accounts:</strong> username, email address, password hash, account identifier, and account creation time.</li><li><strong>Sessions:</strong> a session token and expiry. The app uses a session cookie and a separate account identifier cookie to associate uploads with a signed-in account.</li><li><strong>Files:</strong> stored file bytes, original filename, content type, size, upload time, optional account owner, and optional expiry.</li><li><strong>Albums:</strong> title, description, owner, creation time, and the files included in the album.</li><li><strong>Contact messages:</strong> name, optional email address, message text, and submission time. Messages are recorded in the application database; this build does not send them by email.</li></ul><p>When you submit a URL, the server requests that address and stores the returned file. The remote site and the server operator may process ordinary connection metadata as part of that request.</p></section>
@@ -416,7 +452,7 @@
   }
 
   function authMarkup(mode) {
-    if (mode === 'forgot') return `<div class="legacy-page">${header()}<main id="main" class="legacy-content auth-layout auth-layout-reset"><section class="auth-copy"><span class="eyebrow">ACCOUNT HELP</span><h1 class="legacy-page-title">Can’t sign in?</h1><p class="legacy-page-subtitle">Password reset is not available in this version.</p></section><section class="classic-form-panel reset-help"><p>For account safety, this site does not change passwords or email reset links from this page.</p><p>Use the <a href="/contact.php">contact form</a> to ask the site operator for help. Messages are saved for review and are not emailed automatically.</p><a class="classic-submit reset-contact" href="/contact.php">Contact the site operator</a><a class="auth-switch" href="/user/login.php">Back to sign in</a></section></main>${footer()}</div>`;
+    if (mode === 'forgot') return `<div class="legacy-page">${header()}<main id="main" class="legacy-content auth-layout auth-layout-reset"><section class="auth-copy"><span class="eyebrow">ACCOUNT HELP</span><h1 class="legacy-page-title">CanÃ¢â‚¬â„¢t sign in?</h1><p class="legacy-page-subtitle">Password reset is not available in this version.</p></section><section class="classic-form-panel reset-help"><p>For account safety, this site does not change passwords or email reset links from this page.</p><p>Use the <a href="/contact.php">contact form</a> to ask the site operator for help. Messages are saved for review and are not emailed automatically.</p><a class="classic-submit reset-contact" href="/contact.php">Contact the site operator</a><a class="auth-switch" href="/user/login.php">Back to sign in</a></section></main>${footer()}</div>`;
     const isRegister = mode === 'register';
     const data = isRegister
       ? {
@@ -424,7 +460,7 @@
         intro: 'Create an account to keep uploads organized and gather selected files into shareable albums.',
         formTitle: 'Create your account',
         formIntro: 'A few details and your library is ready.',
-        fields: `<label for="username">Username</label><input class="field" id="username" name="username" autocomplete="username" minlength="3" maxlength="25" pattern="[A-Za-z0-9_]{3,25}" aria-describedby="username-hint" required><small class="field-hint" id="username-hint">3–25 letters, numbers, or underscores.</small><label for="email">Email address</label><input class="field" id="email" name="email" type="email" autocomplete="email" maxlength="254" required><label for="password">Password</label><input class="field" id="password" name="password" type="password" autocomplete="new-password" minlength="8" aria-describedby="password-hint" required><small class="field-hint" id="password-hint">At least 8 characters.</small>`,
+        fields: `<label for="username">Username</label><input class="field" id="username" name="username" autocomplete="username" minlength="3" maxlength="25" pattern="[A-Za-z0-9_]{3,25}" aria-describedby="username-hint" required><small class="field-hint" id="username-hint">3Ã¢â‚¬â€œ25 letters, numbers, or underscores.</small><label for="email">Email address</label><input class="field" id="email" name="email" type="email" autocomplete="email" maxlength="254" required><label for="password">Password</label><input class="field" id="password" name="password" type="password" autocomplete="new-password" minlength="8" aria-describedby="password-hint" required><small class="field-hint" id="password-hint">At least 8 characters.</small>`,
         submit: 'Create account',
         footer: `<span class="auth-switch-copy">Already have an account? <a href="/user/login.php">Sign in</a></span>`,
       }
@@ -435,7 +471,7 @@
         formIntro: 'Sign in to continue to your library.',
         fields: `<label for="username">Username</label><input class="field" id="username" name="username" autocomplete="username" required><label for="password">Password</label><input class="field" id="password" name="password" type="password" autocomplete="current-password" required>`,
         submit: 'Sign in',
-        footer: `<span class="auth-switch-copy">Need an account? <a href="/user/register.php">Create one</a></span><a class="auth-recovery" href="/user/forgotpassword.php">Can’t sign in?</a>`,
+        footer: `<span class="auth-switch-copy">Need an account? <a href="/user/register.php">Create one</a></span><a class="auth-recovery" href="/user/forgotpassword.php">CanÃ¢â‚¬â„¢t sign in?</a>`,
       };
     const benefits = [
       ['folder', 'Keep uploads together', 'Find and manage files you add while signed in.'],
@@ -446,12 +482,12 @@
   }
 
   function renderLibrary() {
-    const content = `<section class="page-intro"><div><span class="eyebrow">YOUR ACCOUNT</span><h1>My files</h1><p>Files uploaded while you were signed in. Signed-out uploads do not appear here.</p></div><button class="button button-primary" type="button" data-open-library-upload aria-expanded="false" aria-controls="library-upload-panel">${icon('upload', true)} Upload a file</button></section><section class="library-upload-panel" id="library-upload-panel" aria-labelledby="library-upload-title" hidden><div class="library-upload-heading"><div><span class="eyebrow">ADD TO YOUR LIBRARY</span><h2 id="library-upload-title">Upload a file</h2><p>Files uploaded here are saved to your account. Up to 20 MB per file.</p></div><button class="button button-quiet button-small" id="library-upload-close" type="button">Close</button></div><label class="library-upload-dropzone" id="library-upload-dropzone" for="library-file-input"><input class="library-upload-input" id="library-file-input" type="file" multiple aria-describedby="library-upload-hint"><span class="library-upload-prompt">${icon('upload', true)} Choose a file or drop it here</span><span class="field-hint" id="library-upload-hint">The file will be added to your account library.</span><span class="library-upload-filename" id="library-upload-filename"></span></label><div class="upload-status" id="library-upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="library-upload-progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" hidden><span id="library-upload-progress-bar"></span></div><div id="library-upload-result"></div></section><section class="metric-row" id="metrics"><div class="metric-card"><div class="metric-label">Files</div><div class="metric-value" id="file-count">—</div><div class="metric-foot">Available in your library</div></div><div class="metric-card"><div class="metric-label">Albums</div><div class="metric-value" id="album-count">—</div><div class="metric-foot"><a href="/user/albums.php">View albums</a></div></div><div class="metric-card"><div class="metric-label">Sharing reminder</div><div class="metric-value metric-note">${icon('shield', true)} Link access</div><div class="metric-foot">Anyone with a link can open that file</div></div></section><section class="library-card"><div class="library-head"><div><h2>Your uploads</h2><p>Search, open, copy, or remove a file you own.</p></div><label class="search-label" for="file-search">Find a file<input class="search-box" id="file-search" type="search" placeholder="Search filenames" autocomplete="off"></label></div><div class="table-labels" id="file-table-head" hidden><span>File</span><span>Size</span><span>Added</span><span class="actions-label">Actions</span></div><div class="file-list" id="file-list" aria-live="polite"><div class="loading-state" role="status">Loading your files…</div></div><p class="search-empty" id="file-search-empty" hidden>No files match that search. Try another filename.</p></section>`;
+    const content = `<section class="page-intro"><div><span class="eyebrow">YOUR ACCOUNT</span><h1>My files</h1><p>Files uploaded while you were signed in. Signed-out uploads do not appear here.</p></div><button class="button button-primary" type="button" data-open-library-upload aria-expanded="false" aria-controls="library-upload-panel">${icon('upload', true)} Upload a file</button></section><section class="library-upload-panel" id="library-upload-panel" aria-labelledby="library-upload-title" hidden><div class="library-upload-heading"><div><span class="eyebrow">ADD TO YOUR LIBRARY</span><h2 id="library-upload-title">Upload a file</h2><p>Files uploaded here are saved to your account. Up to 20 MB per file.</p></div><button class="button button-quiet button-small" id="library-upload-close" type="button">Close</button></div><label class="library-upload-dropzone" id="library-upload-dropzone" for="library-file-input"><input class="library-upload-input" id="library-file-input" type="file" multiple aria-describedby="library-upload-hint"><span class="library-upload-prompt">${icon('upload', true)} Choose a file or drop it here</span><span class="field-hint" id="library-upload-hint">The file will be added to your account library.</span><span class="library-upload-filename" id="library-upload-filename"></span></label><div class="upload-status" id="library-upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="library-upload-progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" hidden><span id="library-upload-progress-bar"></span></div><div id="library-upload-result"></div></section><section class="metric-row" id="metrics"><div class="metric-card"><div class="metric-label">Files</div><div class="metric-value" id="file-count">Ã¢â‚¬â€</div><div class="metric-foot">Available in your library</div></div><div class="metric-card"><div class="metric-label">Albums</div><div class="metric-value" id="album-count">Ã¢â‚¬â€</div><div class="metric-foot"><a href="/user/albums.php">View albums</a></div></div><div class="metric-card"><div class="metric-label">Sharing reminder</div><div class="metric-value metric-note">${icon('shield', true)} Link access</div><div class="metric-foot">Anyone with a link can open that file</div></div></section><section class="library-card"><div class="library-head"><div><h2>Your uploads</h2><p>Search, open, copy, or remove a file you own.</p></div><label class="search-label" for="file-search">Find a file<input class="search-box" id="file-search" type="search" placeholder="Search filenames" autocomplete="off"></label></div><div class="table-labels" id="file-table-head" hidden><span>File</span><span>Size</span><span>Added</span><span class="actions-label">Actions</span></div><div class="file-list" id="file-list" aria-live="polite"><div class="loading-state" role="status">Loading your filesÃ¢â‚¬Â¦</div></div><p class="search-empty" id="file-search-empty" hidden>No files match that search. Try another filename.</p></section>`;
     return shell('library', content);
   }
 
   function renderAlbums() {
-    const content = `<section class="page-intro"><div><span class="eyebrow">YOUR ACCOUNT</span><h1>Albums</h1><p>Group files you own into one shareable page. Anyone with its link can view it.</p></div><a class="button button-quiet" href="/user/index.php">My files</a></section><section class="library-card"><div class="library-head"><div><h2>Your albums</h2><p>Each album has a title, an optional note, and selected files.</p></div><button class="button button-dark button-small" id="new-album" aria-expanded="false" aria-controls="album-form-wrap">${icon('album', true)} New album</button></div><div class="album-grid" id="album-grid" aria-live="polite"><div class="loading-state" role="status">Loading your albums…</div></div></section><section class="library-card album-form-card" id="album-form-wrap" hidden><div class="library-head"><div><h2 id="album-form-title">Create an album</h2><p>Give it a title, then select at least one file from your library.</p></div></div><form class="album-form" id="album-form"><div class="field-group"><label class="field-label" for="album-title">Album title</label><input class="field" id="album-title" name="title" maxlength="200" required></div><div class="field-group"><label class="field-label" for="album-desc">Description <span class="muted">(optional)</span></label><textarea class="field field-textarea" id="album-desc" name="desc" maxlength="2000" rows="3"></textarea><small class="field-hint">Up to 2,000 characters.</small></div><fieldset id="album-files" class="album-file-picker" tabindex="-1" aria-describedby="album-error"><legend class="field-label">Choose files</legend><div class="loading-state" role="status">Loading your files…</div></fieldset><div id="album-error" class="auth-error" role="alert" aria-live="polite"></div><div class="album-form-actions"><button class="button button-dark" type="submit">Create album ${icon('arrow', true)}</button><button class="button button-quiet" id="cancel-album" type="button">Cancel</button></div></form></section>`;
+    const content = `<section class="page-intro"><div><span class="eyebrow">YOUR ACCOUNT</span><h1>Albums</h1><p>Group files you own into one shareable page. Anyone with its link can view it.</p></div><a class="button button-quiet" href="/user/index.php">My files</a></section><section class="library-card"><div class="library-head"><div><h2>Your albums</h2><p>Each album has a title, an optional note, and selected files.</p></div><button class="button button-dark button-small" id="new-album" aria-expanded="false" aria-controls="album-form-wrap">${icon('album', true)} New album</button></div><div class="album-grid" id="album-grid" aria-live="polite"><div class="loading-state" role="status">Loading your albumsÃ¢â‚¬Â¦</div></div></section><section class="library-card album-form-card" id="album-form-wrap" hidden><div class="library-head"><div><h2 id="album-form-title">Create an album</h2><p>Give it a title, then select at least one file from your library.</p></div></div><form class="album-form" id="album-form"><div class="field-group"><label class="field-label" for="album-title">Album title</label><input class="field" id="album-title" name="title" maxlength="200" required></div><div class="field-group"><label class="field-label" for="album-desc">Description <span class="muted">(optional)</span></label><textarea class="field field-textarea" id="album-desc" name="desc" maxlength="2000" rows="3"></textarea><small class="field-hint">Up to 2,000 characters.</small></div><fieldset id="album-files" class="album-file-picker" tabindex="-1" aria-describedby="album-error"><legend class="field-label">Choose files</legend><div class="loading-state" role="status">Loading your filesÃ¢â‚¬Â¦</div></fieldset><div id="album-error" class="auth-error" role="alert" aria-live="polite"></div><div class="album-form-actions"><button class="button button-dark" type="submit">Create album ${icon('arrow', true)}</button><button class="button button-quiet" id="cancel-album" type="button">Cancel</button></div></form></section>`;
     return shell('albums', content, 'Albums');
   }
 
@@ -529,22 +565,22 @@
         if (remove) {
           const file = data.files.find(item => item.name === remove.dataset.delete);
           const name = file?.originalName || file?.name || 'this file';
-          if (!window.confirm(`Delete “${name}”? Its link will stop working.`)) return;
+          if (!window.confirm(`Delete Ã¢â‚¬Å“${name}Ã¢â‚¬Â? Its link will stop working.`)) return;
           remove.disabled = true;
           try {
             const body = new FormData(); body.append('reqtype', 'deletefiles'); body.append('userhash', getCookie('userhash')); body.append('files', remove.dataset.delete);
             const result = await fetch('/user/api.php', { method: 'POST', body });
             const message = await result.text();
-            if (!result.ok) { toast(message || 'The file could not be deleted. Try again.', 'error'); return; }
+            if (!result.ok) { toast(friendlyServerMessage(message, result) || 'The file could not be deleted. Try again.', 'error'); return; }
             data.files = data.files.filter(item => item.name !== remove.dataset.delete);
             $('#file-count').textContent = data.files.length;
             renderFileList(data.files); applySearch();
             toast('File deleted. Its link no longer works.');
-          } catch { toast('Could not reach the server. The file was not deleted.', 'error'); }
+          } catch { toast('Server is down. Please wait for it and try again.', 'error'); }
           finally { if (remove.isConnected) remove.disabled = false; }
         }
       };
-    } catch (error) { if (error.message !== 'Please sign in.') $('#file-list').innerHTML = `<div class="empty-state"><h3>We couldn’t load your files.</h3><p>${esc(error.message)} Your files have not been changed.</p><button class="button button-quiet" type="button" data-retry>Try again</button></div>`; $('#file-list [data-retry]')?.addEventListener('click', () => location.reload()); }
+    } catch (error) { if (error.message !== 'Please sign in.') $('#file-list').innerHTML = `<div class="empty-state"><h3>We couldn't load your files.</h3><p>${esc(error.message)} Your files have not been changed.</p><button class="button button-quiet" type="button" data-retry>Try again</button></div>`; $('#file-list [data-retry]')?.addEventListener('click', () => location.reload()); }
   }
   function initLibraryUpload(data, applySearch) {
     const panel = $('#library-upload-panel');
@@ -594,7 +630,7 @@
       }
 
       filename.textContent = file.name;
-      status.textContent = 'Preparing your upload…';
+      status.textContent = 'Preparing your uploadÃ¢â‚¬Â¦';
       status.dataset.kind = '';
       result.replaceChildren();
       progress.hidden = false;
@@ -621,7 +657,7 @@
               const percent = Math.round(sent / total * 100);
               progressBar.style.width = `${percent}%`;
               progress.setAttribute('aria-valuenow', String(percent));
-              status.textContent = `Uploading · ${percent}%`;
+              status.textContent = `Uploading Ã‚Â· ${percent}%`;
             },
           });
           progress.hidden = true;
@@ -631,9 +667,9 @@
             clearSession(file);
           } else {
             saveSession(file, session);
-            status.textContent = 'Queued for upload…';
+            status.textContent = 'Queued for uploadÃ¢â‚¬Â¦';
             url = await pollJob(job.status_url, state => {
-              status.textContent = state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…';
+              status.textContent = state === 'uploading' ? 'Uploading to storageÃ¢â‚¬Â¦' : 'Queued for uploadÃ¢â‚¬Â¦';
             });
             clearSession(file);
           }
@@ -666,19 +702,19 @@
     }
 
     function renderLibraryBatch(stats, items, queue) {
-      status.textContent = `Uploading ${stats.done + stats.failed} of ${stats.total} · ${stats.percent}%`;
+      status.textContent = `Uploading ${stats.done + stats.failed} of ${stats.total} Ã‚Â· ${stats.percent}%`;
       status.dataset.kind = stats.failed ? 'error' : '';
       progress.hidden = false;
       progress.setAttribute('aria-valuenow', String(stats.percent));
       progressBar.style.width = `${stats.percent}%`;
       result.innerHTML = batchUI.actionsMarkup()
         + `<ul class="batch-list" aria-label="Upload queue">${items.map(item => {
-        const label = item.label.length > 42 ? `${item.label.slice(0, 39)}…` : item.label;
+        const label = item.label.length > 42 ? `${item.label.slice(0, 39)}Ã¢â‚¬Â¦` : item.label;
         const detail = item.status === 'done' ? 'Saved'
           : item.status === 'failed' ? esc(item.error || 'Failed')
-          : item.status === 'processing' ? 'Saving to storage…'
+          : item.status === 'processing' ? 'Saving to storageÃ¢â‚¬Â¦'
           : item.status === 'cancelled' ? 'Cancelled'
-          : item.status === 'uploading' ? `${item.sent}/${item.total} bytes` : 'Waiting…';
+          : item.status === 'uploading' ? `${item.sent}/${item.total} bytes` : 'WaitingÃ¢â‚¬Â¦';
         return `<li class="batch-item" data-status="${item.status}"><span class="batch-name">${esc(label)}</span><span class="batch-detail">${detail}</span></li>`;
       }).join('')}</ul>`;
       wireBatchActions(result, items, queue);
@@ -695,7 +731,7 @@
         return;
       }
       filename.textContent = `${files.length} files selected`;
-      status.textContent = 'Preparing your upload…';
+      status.textContent = 'Preparing your uploadÃ¢â‚¬Â¦';
       status.dataset.kind = '';
       result.replaceChildren();
       progress.hidden = false;
@@ -717,7 +753,7 @@
         renderFileList(data.files);
         applySearch();
         const s = q.stats;
-        status.textContent = `Finished ${s.done} of ${s.total} files${s.failed ? ` · ${s.failed} failed` : ''}. Added to My files.`;
+        status.textContent = `Finished ${s.done} of ${s.total} files${s.failed ? ` Ã‚Â· ${s.failed} failed` : ''}. Added to My files.`;
         status.dataset.kind = s.failed ? 'error' : 'success';
       }).catch(err => { status.textContent = err.message || 'The batch could not be uploaded.'; status.dataset.kind = 'error'; })
         .finally(() => {
@@ -786,16 +822,16 @@
         const selected = [...form.querySelectorAll('[name="files"]:checked')].map(input => input.value);
         if (!selected.length) { $('#album-error').textContent = 'Choose at least one file for your album.'; $('#album-files').focus(); return; }
         const body = new FormData(); body.append('reqtype', 'createalbum'); body.append('userhash', getCookie('userhash')); body.append('title', $('#album-title').value.trim()); body.append('desc', $('#album-desc').value.trim()); body.append('files', selected.join(' '));
-        const button = form.querySelector('button[type="submit"]'); form.dataset.submitting = 'true'; button.disabled = true; button.textContent = 'Creating album…'; $('#album-error').textContent = '';
+        const button = form.querySelector('button[type="submit"]'); form.dataset.submitting = 'true'; button.disabled = true; button.textContent = 'Creating albumÃ¢â‚¬Â¦'; $('#album-error').textContent = '';
         try {
           const response = await fetch('/user/api.php', { method: 'POST', body }); const result = await response.text();
-          if (!response.ok) { $('#album-error').textContent = result || 'The album could not be created. Check your details and try again.'; form.dataset.submitting = 'false'; button.disabled = false; button.innerHTML = `Create album ${icon('arrow', true)}`; return; }
+          if (!response.ok) { $('#album-error').textContent = friendlyServerMessage(result, response) || 'The album could not be created. Check your details and try again.'; form.dataset.submitting = 'false'; button.disabled = false; button.innerHTML = `Create album ${icon('arrow', true)}`; return; }
           // Keep the frontend origin: /a/:short is served by this app and fetches
           // album data through the same-origin API rewrite.
           location.assign(new URL(result, location.origin).pathname);
-        } catch { $('#album-error').textContent = 'Could not reach the server. Your album was not created. Try again.'; form.dataset.submitting = 'false'; button.disabled = false; button.innerHTML = `Create album ${icon('arrow', true)}`; }
+        } catch { $('#album-error').textContent = 'Server is down. Please wait for it and try again.'; form.dataset.submitting = 'false'; button.disabled = false; button.innerHTML = `Create album ${icon('arrow', true)}`; }
       };
-    } catch (error) { if (error.message !== 'Please sign in.') $('#album-grid').innerHTML = `<div class="empty-state"><h3>We couldn’t load your albums.</h3><p>${esc(error.message)} Your albums have not been changed.</p><button class="button button-quiet" type="button" data-retry>Try again</button></div>`; $('#album-grid [data-retry]')?.addEventListener('click', () => location.reload()); }
+    } catch (error) { if (error.message !== 'Please sign in.') $('#album-grid').innerHTML = `<div class="empty-state"><h3>We couldn't load your albums.</h3><p>${esc(error.message)} Your albums have not been changed.</p><button class="button button-quiet" type="button" data-retry>Try again</button></div>`; $('#album-grid [data-retry]')?.addEventListener('click', () => location.reload()); }
   }
   function getCookie(name) { return document.cookie.split('; ').find(cookie => cookie.startsWith(`${name}=`))?.split('=').slice(1).join('=') || ''; }
 
@@ -838,7 +874,7 @@
       }
       onUpdate?.(job.status, job.attempts);
     }
-    throw new Error('This upload is taking longer than expected. Your file may still finish in the background — refresh My files in a moment.');
+    throw new Error('This upload is taking longer than expected. Your file may still finish in the background Ã¢â‚¬â€ refresh My files in a moment.');
   }
   async function copyText(text) {
     try {
@@ -850,7 +886,7 @@
         if (!copied) throw new Error('Clipboard unavailable');
       }
       toast('Link copied. Ready to share.');
-    } catch { toast('Couldn’t copy automatically. Select the link and copy it manually.', 'error'); }
+    } catch { toast('CouldnÃ¢â‚¬â„¢t copy automatically. Select the link and copy it manually.', 'error'); }
   }
   // BatchUI owns the small amount of DOM wiring so it can be unit-tested.
   const batchUI = window.BatchUI;
@@ -907,18 +943,18 @@
 
     function renderBatch(stats, items, queue) {
       if (!status || !result || !progress) return;
-      setStatus(`Uploading ${stats.done + stats.failed} of ${stats.total} · ${stats.percent}%`, stats.failed ? 'error' : '');
+      setStatus(`Uploading ${stats.done + stats.failed} of ${stats.total} Ã‚Â· ${stats.percent}%`, stats.failed ? 'error' : '');
       bar.style.width = `${stats.percent}%`;
       result.innerHTML = batchUI.actionsMarkup()
         + `<ul class="batch-list" aria-label="Upload queue">${items.map(item => {
-        const label = item.label.length > 42 ? `${item.label.slice(0, 39)}…` : item.label;
+        const label = item.label.length > 42 ? `${item.label.slice(0, 39)}Ã¢â‚¬Â¦` : item.label;
         const detail = item.status === 'done'
           ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">Open link</a>`
           : item.status === 'failed' ? esc(item.error || 'Failed')
-          : item.status === 'processing' ? 'Saving to storage…'
+          : item.status === 'processing' ? 'Saving to storageÃ¢â‚¬Â¦'
           : item.status === 'cancelled' ? 'Cancelled'
           : item.status === 'uploading' ? `${item.sent}/${item.total} bytes`
-          : 'Waiting…';
+          : 'WaitingÃ¢â‚¬Â¦';
         return `<li class="batch-item" data-status="${item.status}"><span class="batch-name">${esc(label)}</span><span class="batch-detail">${detail}</span></li>`;
       }).join('')}</ul>`;
       wireBatchActions(result, items, queue);
@@ -947,7 +983,7 @@
         onUpdate: (s, i) => renderBatch(s, i, queue),
       }).then(q => {
         const s = q.stats;
-        setStatus(`Finished ${s.done} of ${s.total} files${s.failed ? ` · ${s.failed} failed` : ''}.`, s.failed ? 'error' : 'success');
+        setStatus(`Finished ${s.done} of ${s.total} files${s.failed ? ` Ã‚Â· ${s.failed} failed` : ''}.`, s.failed ? 'error' : 'success');
       }).catch(err => setStatus(err.message || 'The batch could not be uploaded.', 'error'))
         .finally(() => { uploadBusy = false; input.disabled = false; input.value = ''; dropzone?.classList.remove('is-uploading'); dropzone?.removeAttribute('aria-busy'); result.querySelector('[data-cancel-upload]')?.remove(); });
     }
@@ -960,7 +996,7 @@
       input.disabled = true;
       dropzone?.classList.add('is-uploading');
       dropzone?.setAttribute('aria-busy', 'true');
-      fileName.textContent = file.name; result.innerHTML = ''; setStatus('Uploading…');
+      fileName.textContent = file.name; result.innerHTML = ''; setStatus('UploadingÃ¢â‚¬Â¦');
       input.value = '';
       const controller = new AbortController();
       request = controller;
@@ -979,7 +1015,7 @@
             onProgress: (sent, total) => {
               const percent = Math.round(sent / total * 100);
               if (progress) bar.style.width = `${percent}%`;
-              setStatus(`Uploading · ${percent}%`);
+              setStatus(`Uploading Ã‚Â· ${percent}%`);
             },
           });
           if (progress) progress.hidden = true;
@@ -989,8 +1025,8 @@
             clearSession(file);
           } else {
             saveSession(file, session);
-            setStatus('Queued for upload…');
-            url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…'));
+            setStatus('Queued for uploadÃ¢â‚¬Â¦');
+            url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storageÃ¢â‚¬Â¦' : 'Queued for uploadÃ¢â‚¬Â¦'));
             clearSession(file);
           }
           setStatus(isLitterbox ? 'Upload complete. This file will expire as selected.' : 'Upload complete.', 'success');
@@ -1025,7 +1061,7 @@
       event.preventDefault(); const field = $('#file-url'); const button = urlPanel.querySelector('button[type="submit"]');
       if (uploadBusy) { setStatus('An upload is already in progress. Please wait for it to finish.', 'error'); return; }
       if (!field.reportValidity()) return;
-      uploadBusy = true; button.disabled = true; setStatus('Fetching file…'); result.innerHTML = '';
+      uploadBusy = true; button.disabled = true; setStatus('Fetching fileÃ¢â‚¬Â¦'); result.innerHTML = '';
       const body = new FormData(); body.append('reqtype', 'urlupload'); body.append('url', field.value);
       if (isLitterbox) body.append('time', $('#expiry').value);
       else if (getCookie('userhash')) body.append('userhash', getCookie('userhash'));
@@ -1038,15 +1074,15 @@
         const output = (await response.text()).trim();
         if (response.status === 202) {
           const job = JSON.parse(output);
-          setStatus('Queued for upload…');
-          const url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storage…' : 'Queued for upload…'));
+          setStatus('Queued for upload...');
+          const url = await pollJob(job.status_url, state => setStatus(state === 'uploading' ? 'Uploading to storage...' : 'Queued for upload...'));
           setStatus(isLitterbox ? 'Upload complete. This file will expire as selected.' : 'Upload complete.', 'success');
           showLink(url);
           return;
         }
-        if (!response.ok) { setStatus(output || 'Could not fetch that URL.', 'error'); return; }
+        if (!response.ok) { setStatus(friendlyServerMessage(output, response) || 'Could not fetch that URL.', 'error'); return; }
         setStatus(isLitterbox ? 'Upload complete. This file will expire as selected.' : 'Upload complete.', 'success'); showLink(output);
-      } catch { setStatus('Could not reach the server. Please try again.', 'error'); }
+      } catch { setStatus('Server is down. Please wait for it and try again.', 'error'); }
       finally { uploadBusy = false; button.disabled = false; }
     });
   }
@@ -1056,27 +1092,27 @@
     form.addEventListener('submit', async event => {
       event.preventDefault(); if (!form.reportValidity() || form.dataset.submitting === 'true') return; form.dataset.submitting = 'true';
       const mode = form.dataset.mode; const button = form.querySelector('button[type="submit"]'); const error = $('#auth-error');
-      const previous = button.innerHTML; button.disabled = true; button.textContent = mode === 'login' ? 'Signing in…' : mode === 'register' ? 'Making your account…' : 'Working…'; error.textContent = '';
+      const previous = button.innerHTML; button.disabled = true; button.textContent = mode === 'login' ? 'Signing inÃ¢â‚¬Â¦' : mode === 'register' ? 'Making your accountÃ¢â‚¬Â¦' : 'WorkingÃ¢â‚¬Â¦'; error.textContent = '';
       const body = new URLSearchParams(new FormData(form)); const endpoint = mode === 'login' ? '/user/dologin.php' : mode === 'register' ? '/user/doregister.php' : '/user/reset_password.php';
       try {
         const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
         const message = await response.text();
-        if (!response.ok) { error.textContent = message || 'That request could not be completed. Please try again.'; return; }
+        if (!response.ok) { error.textContent = friendlyServerMessage(message, response) || 'That request could not be completed. Please try again.'; return; }
         if (mode === 'forgot') { error.style.color = 'var(--color-green)'; error.textContent = message; button.disabled = false; button.innerHTML = previous; return; }
         location.assign('/user/index.php');
-      } catch { error.textContent = 'We couldn’t reach the server. Please try again.'; }
+      } catch { error.textContent = 'Server is down. Please wait for it and try again.'; }
       finally { form.dataset.submitting = 'false'; if (button.disabled) { button.disabled = false; button.innerHTML = previous; } }
     });
   }
   function initContact() {
     const form = $('#contact-form'); if (!form) return;
     form.addEventListener('submit', async event => {
-      event.preventDefault(); if (!form.reportValidity() || form.dataset.submitting === 'true') return; form.dataset.submitting = 'true'; const status = $('#contact-status'); const button = form.querySelector('button'); button.disabled = true; status.textContent = 'Saving your message…'; status.setAttribute('role', 'status');
+      event.preventDefault(); if (!form.reportValidity() || form.dataset.submitting === 'true') return; form.dataset.submitting = 'true'; const status = $('#contact-status'); const button = form.querySelector('button'); button.disabled = true; status.textContent = 'Saving your messageÃ¢â‚¬Â¦'; status.setAttribute('role', 'status');
       try {
         const response = await fetch('/do_contact.php', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(new FormData(form)) });
-        const message = await response.text(); status.textContent = message; status.dataset.kind = response.ok ? 'success' : 'error'; status.setAttribute('role', response.ok ? 'status' : 'alert');
+        const message = await response.text(); status.textContent = response.ok ? message : (friendlyServerMessage(message, response) || message); status.dataset.kind = response.ok ? 'success' : 'error'; status.setAttribute('role', response.ok ? 'status' : 'alert');
         if (response.ok) form.reset();
-      } catch { status.textContent = 'We couldn’t reach the server. Your message was not saved. Please try again.'; status.dataset.kind = 'error'; status.setAttribute('role', 'alert'); }
+      } catch { status.textContent = 'Server is down. Please wait for it and try again.'; status.dataset.kind = 'error'; status.setAttribute('role', 'alert'); }
       finally { form.dataset.submitting = 'false'; button.disabled = false; }
     });
   }
@@ -1086,7 +1122,7 @@
       const response = await fetch(`/api/albums/${encodeURIComponent(short)}`);
       if (!response.ok) throw new Error('This album may have moved, or the link might be mistyped.');
       const data = await response.json();
-      document.title = `${data.album.title} · MewPocket`;
+      document.title = `${data.album.title} Ã‚Â· MewPocket`;
       app.innerHTML = `${header()}<main id="main" class="wrap"><section class="page-intro"><div><span class="eyebrow">A SMALL COLLECTION</span><h1>${esc(data.album.title)}</h1><p>${esc(data.album.description || `${data.files.length} file${data.files.length === 1 ? '' : 's'}, together in one place.`)}</p></div></section><section class="album-view">${data.files.length ? data.files.map(file => `<article class="album-file"><a href="${esc(file.url)}" target="_blank" rel="noopener">${file.mime.startsWith('image/') ? `<img class="album-image" src="${esc(file.url)}" alt="${esc(file.originalName)}" loading="lazy">` : `<span class="album-image" style="display:grid;place-items:center">${icon('file')}</span>`}<p>${esc(file.originalName)}</p></a></article>`).join('') : '<div class="empty-state" style="grid-column:1/-1"><h3>This album is empty for now.</h3></div>'}</section></main>${footer()}`;
       syncRenderedTheme();
     } catch (error) { app.innerHTML = `${header()}<main id="main" class="wrap page-404"><span class="eyebrow">NOT FOUND</span><h1>This album is taking a break.</h1><p class="muted">${esc(error.message)}</p><a class="button button-primary" href="/">Back to the upload page ${icon('arrow', true)}</a></main>${footer()}`; syncRenderedTheme(); }
@@ -1098,7 +1134,6 @@
     $$('[data-theme-toggle]').forEach(toggle => {
       toggle.textContent = dark ? 'Lights on!' : 'Go Dark?';
       toggle.setAttribute('aria-pressed', String(dark));
-      toggle.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
     });
   }
 
@@ -1120,8 +1155,8 @@
     });
   }
 
-  const pageTitles = { home: 'Simple file sharing', litterbox: 'Temporary uploads', faq: 'Frequently asked questions', tools: 'Upload and sharing tools', legal: 'Terms and privacy', contact: 'Contact', login: 'Sign in', register: 'Create an account', forgot: 'Can’t sign in?', library: 'My files', albums: 'Albums', album: 'Shared album', notfound: 'Page not found' };
-  document.title = `${pageTitles[page] || 'File sharing'} · MewPocket`;
+  const pageTitles = { home: 'Simple file sharing', litterbox: 'Temporary uploads', faq: 'Frequently asked questions', tools: 'Upload and sharing tools', legal: 'Terms and privacy', contact: 'Contact', login: 'Sign in', register: 'Create an account', forgot: 'CanÃ¢â‚¬â„¢t sign in?', library: 'My files', albums: 'Albums', album: 'Shared album', notfound: 'Page not found' };
+  document.title = `${pageTitles[page] || 'File sharing'} Ã‚Â· MewPocket`;
   const descriptions = { home: 'Upload and share files. Files up to 20 MB, no account required.', litterbox: 'Upload a file and choose when its temporary sharing link expires.', faq: 'Answers about uploads, file links, account libraries, albums, and privacy.', tools: 'Upload files, create temporary links, and organize files into albums.', legal: 'Read how file links, storage, account data, and temporary file expiry work.', contact: 'Contact the site operator or report a file or broken link.' };
   const description = document.querySelector('meta[name="description"]');
   if (description && descriptions[page]) description.content = descriptions[page];
@@ -1132,7 +1167,7 @@
   else if (page === 'library') { app.innerHTML = renderLibrary(); initLibrary(); }
   else if (page === 'albums') { app.innerHTML = renderAlbums(); initAlbums(); }
   else if (page === 'album') initAlbum();
-  else { app.innerHTML = `${header()}<main id="main" class="wrap page-404"><span class="eyebrow">404 · NOT FOUND</span><h1>Nothing here just yet.</h1><p class="muted">The page may have moved. Your files are safe.</p><a class="button button-primary" href="/">Back to the upload page ${icon('arrow', true)}</a></main>${footer()}`; }
+  else { app.innerHTML = `${header()}<main id="main" class="wrap page-404"><span class="eyebrow">404 Ã‚Â· NOT FOUND</span><h1>Nothing here just yet.</h1><p class="muted">The page may have moved. Your files are safe.</p><a class="button button-primary" href="/">Back to the upload page ${icon('arrow', true)}</a></main>${footer()}`; }
 
  
 
