@@ -297,6 +297,31 @@
     return `<div class="classic-home ${temporary ? 'is-temporary' : ''}"><main id="main" class="classic-main"><section class="classic-uploader" aria-label="Upload a file"><div class="upload-panel" id="panel-file"><label class="dropzone" id="dropzone" for="file-input"><input class="file-picker" id="file-input" type="file" multiple aria-label="Select one or more files to upload"><span class="dropzone-title">Select or drop a file</span><span class="dropzone-hint">or tap to choose from your device · 20 MB max</span><span class="upload-file-name" id="file-name"></span></label></div><div class="urlUploads"><p><button class="classic-link" id="tab-url" type="button" aria-expanded="false" aria-controls="url-form">Upload via URL</button></p><form class="url-form" id="url-form" hidden><label class="field-label" for="file-url">Paste a direct file link</label><div class="url-input-row"><input class="field" id="file-url" name="url" type="url" placeholder="https://example.com/file.png" required><button class="classic-go" type="submit">Upload</button></div><button class="classic-link" id="tab-file-return" type="button" aria-expanded="false">Choose a file instead</button></form></div>${temporary ? '<div class="classic-expiry"><label for="expiry">Remove after</label><select id="expiry" class="select-small"><option value="1h">1 hour</option><option value="12h">12 hours</option><option value="24h" selected>24 hours</option><option value="72h">72 hours</option></select><small class="field-hint">The link works until this time, then the file is removed.</small></div>' : ''}<div class="upload-status" id="upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="progress-track" hidden><span id="progress-bar"></span></div><div id="upload-result"></div></section><nav class="classic-nav" aria-label="Main navigation">${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Terms &amp; privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button></nav><details class="mobile-nav"><summary>Menu</summary><nav aria-label="Mobile navigation">${links}</nav></details><section class="classic-support"><p><strong>Simple file sharing, with clear limits.</strong></p><div class="classic-support-links"><a href="/faq.php">How uploads work</a><a href="/tools.php">Upload options</a><a href="/user/register.php">Create an account</a></div><div class="classic-support-bar"><span>Up to 20 MB · No account required</span></div></section><section class="classic-notice"><b>Need a temporary link?</b><br><a href="/litterbox.php">Use temporary uploads</a> to choose when the file expires.</section><p class="classic-privacy-note">${temporary ? 'Anyone with a temporary link can open the file until it expires.' : 'Anyone with a file link can open it. Sign in before uploading if you want to manage the file later.'}</p><footer class="legacy-footer"><a href="/contact.php">Contact</a></footer></main></div>`;
   }
 
+  function mountArtworks(variant = 'page') {
+    const root = app.firstElementChild;
+    if (!root) return;
+    // Remove stale artwork when re-rendering.
+    root.querySelectorAll('.legacy-artwork').forEach(el => el.remove());
+
+    const isHome = variant === 'home';
+    const suffix = isHome ? 'home-artwork' : 'page-artwork';
+
+    const topArtwork = document.createElement('img');
+    topArtwork.className = `legacy-artwork top-left-waifu ${suffix}`;
+    topArtwork.src = '/assets/waifu/top-left/peeking-brunette.webp';
+    topArtwork.alt = '';
+    topArtwork.setAttribute('aria-hidden', 'true');
+
+    const bottomArtwork = document.createElement('img');
+    bottomArtwork.className = `legacy-artwork bottom-right-waifu ${suffix}`;
+    bottomArtwork.src = '/assets/catbox-qts/1363382418078.png';
+    bottomArtwork.alt = '';
+    bottomArtwork.setAttribute('aria-hidden', 'true');
+
+    root.prepend(bottomArtwork, topArtwork);
+    initArtworkRotation({ topLeft: topArtwork, bottomRight: bottomArtwork });
+  }
+
   function initHomeLayout() {
     const home = $('.classic-home');
     if (!home) return;
@@ -310,20 +335,7 @@
     brandHero.innerHTML = `<h1 class="home-brand-title"><a class="home-brand-wordmark" href="/" aria-label="MewPocket home"><img class="home-brand-symbol" src="/assets/mewpocket.svg" width="64" height="64" alt=""><span>Mew<span class="home-brand-accent">Pocket</span></span></a></h1>`;
     main.prepend(brandHero);
 
-    const topArtwork = document.createElement('img');
-    topArtwork.className = 'legacy-artwork top-left-waifu home-artwork';
-    topArtwork.src = '/assets/waifu/top-left/peeking-brunette.webp';
-    topArtwork.alt = '';
-    topArtwork.setAttribute('aria-hidden', 'true');
-    const bottomArtwork = document.createElement('img');
-    bottomArtwork.className = 'legacy-artwork bottom-right-waifu home-artwork';
-    // Show a random Catbox-style character on first paint; rotation uses the full set.
-    // We randomize immediately per load (below) so use an in-set default here.
-    bottomArtwork.src = '/assets/catbox-qts/1363382418078.png';
-    bottomArtwork.alt = '';
-    bottomArtwork.setAttribute('aria-hidden', 'true');
-    home.prepend(bottomArtwork, topArtwork);
-    initArtworkRotation({ topLeft: topArtwork, bottomRight: bottomArtwork });
+    mountArtworks('home');
   }
 
   async function initArtworkRotation(corners) {
@@ -1174,14 +1186,12 @@
   if (description && descriptions[page]) description.content = descriptions[page];
 
   if (page === 'home' || page === 'litterbox') { app.innerHTML = homeMarkup(isLitterbox); initHomeLayout(); initUpload(); }
-  else if (page in pages) { app.innerHTML = renderStaticPage(pages[page]); if (page === 'contact') initContact(); }
-  else if (page === 'login' || page === 'register' || page === 'forgot') { app.innerHTML = authMarkup(page); initAuth(); }
-  else if (page === 'library') { app.innerHTML = renderLibrary(); initLibrary(); }
-  else if (page === 'albums') { app.innerHTML = renderAlbums(); initAlbums(); }
-  else if (page === 'album') initAlbum();
-  else { app.innerHTML = `${header()}<main id="main" class="wrap page-404"><span class="eyebrow">404 · NOT FOUND</span><h1>Nothing here just yet.</h1><p class="muted">The page may have moved. Your files are safe.</p><a class="button button-primary" href="/">Back to the upload page ${icon('arrow', true)}</a></main>${footer()}`; }
-
- 
+  else if (page in pages) { app.innerHTML = renderStaticPage(pages[page]); mountArtworks('page'); if (page === 'contact') initContact(); }
+  else if (page === 'login' || page === 'register' || page === 'forgot') { app.innerHTML = authMarkup(page); mountArtworks('page'); initAuth(); }
+  else if (page === 'library') { app.innerHTML = renderLibrary(); mountArtworks('page'); initLibrary(); }
+  else if (page === 'albums') { app.innerHTML = renderAlbums(); mountArtworks('page'); initAlbums(); }
+  else if (page === 'album') { initAlbum().then(() => mountArtworks('page')).catch(() => mountArtworks('page')); }
+  else { app.innerHTML = `${header()}<main id="main" class="wrap page-404"><span class="eyebrow">404 ? NOT FOUND</span><h1>Nothing here just yet.</h1><p class="muted">The page may have moved. Your files are safe.</p><a class="button button-primary" href="/">Back to the upload page ${icon('arrow', true)}</a></main>${footer()}`; mountArtworks('page'); }
 
   initTheme();
   showResumeHint();

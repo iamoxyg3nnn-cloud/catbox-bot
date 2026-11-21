@@ -1246,8 +1246,9 @@ a:hover { color: #3f8694; text-decoration: underline; }
 .legacy-artwork.home-artwork { opacity:.92; }
 .legacy-artwork.page-artwork { opacity:.72; }
 .legacy-artwork.top-left-waifu { position:fixed; top:8px; left:8px; width:min(15vw,170px); max-height:28vh; }
-.legacy-artwork.bottom-right-waifu { position:fixed; right:8px; bottom:8px; width:min(18vw,210px); max-height:32vh; }
+.legacy-artwork.bottom-right-waifu { position:fixed; right:0; bottom:-5px; width:auto; height:auto; max-width:min(24vw,260px); max-height:min(55vh,490px); object-position:bottom right; }
 .legacy-artwork.page-artwork.top-left-waifu { top:84px; width:min(13vw,150px); max-height:26vh; }
+.legacy-artwork.page-artwork.bottom-right-waifu { right:0; bottom:-5px; max-width:min(20vw,230px); max-height:min(50vh,420px); opacity:.88; }
 /* The header is absolutely positioned on wide screens while the main panel is
    relative. Both used to sit at z-index:1, so the later-painted main panel
    covered the Home link and swallowed every click. Keep the header above it. */
@@ -1281,9 +1282,10 @@ a:hover { color: #3f8694; text-decoration: underline; }
   .auth-copy .legacy-page-subtitle { width:100%; margin-top:24px; }
   .classic-home .legacy-footer, .legacy-footer { padding-bottom:max(12px,env(safe-area-inset-bottom)); font-size:14px; }
   .legacy-artwork.top-left-waifu { top:max(8px,env(safe-area-inset-top)); left:4px; width:min(20vw,84px); max-height:18vh; }
-  .legacy-artwork.bottom-right-waifu { right:4px; bottom:max(8px,env(safe-area-inset-bottom)); width:min(22vw,96px); max-height:20vh; }
+  .legacy-artwork.bottom-right-waifu { right:0; bottom:-5px; width:auto; height:auto; max-width:min(28vw,150px); max-height:min(32vh,260px); }
   .legacy-artwork.page-artwork.top-left-waifu { top:max(84px,calc(env(safe-area-inset-top) + 72px)); width:min(20vw,72px); max-height:16vh; }
-  .legacy-artwork.home-artwork, .legacy-artwork.page-artwork { opacity:.38; }
+  .legacy-artwork.page-artwork.bottom-right-waifu { max-width:min(26vw,140px); max-height:min(28vh,220px); opacity:.72; }
+  .legacy-artwork.home-artwork, .legacy-artwork.page-artwork { opacity:.72; }
 }
 @media (max-width:420px) {
   .classic-home { padding-inline:14px; }
