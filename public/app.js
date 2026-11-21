@@ -317,7 +317,8 @@
     topArtwork.setAttribute('aria-hidden', 'true');
     const bottomArtwork = document.createElement('img');
     bottomArtwork.className = 'legacy-artwork bottom-right-waifu home-artwork';
-    bottomArtwork.src = '/assets/waifu/bottom-right/smiling-blue-maid.webp';
+    // Show a random Catbox-style character on first paint; rotation uses the full set.
+    bottomArtwork.src = '/assets/catbox-qts/1363382418078.png';
     bottomArtwork.alt = '';
     bottomArtwork.setAttribute('aria-hidden', 'true');
     home.prepend(bottomArtwork, topArtwork);
@@ -339,10 +340,23 @@
       image,
       sources: [...new Set((Array.isArray(manifest?.[key]) ? manifest[key] : [])
         .map(entry => entry?.src)
-        .filter(src => typeof src === 'string' && src.startsWith('/assets/waifu/')))],
+        .filter(src => typeof src === 'string' && (src.startsWith('/assets/waifu/') || src.startsWith('/assets/catbox-qts/'))))],
       remaining: [],
     })).filter(group => group.sources.length > 1);
     if (!groups.length) return;
+
+    // Randomize the initial artwork per load (Catbox picks randomly on each visit).
+    await Promise.all(groups.map(async group => {
+      const choices = group.sources.filter(src => src !== group.image.getAttribute('src'));
+      if (!choices.length) return;
+      const src = choices[Math.floor(Math.random() * choices.length)];
+      const preload = new Image();
+      preload.src = src;
+      try { await preload.decode(); } catch { return; }
+      if (!group.image.isConnected) return;
+      group.image.src = src;
+      group.remaining = group.sources.filter(s => s !== src);
+    }));
 
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     let timer;
@@ -373,6 +387,7 @@
         }
         if (visible() && image.isConnected) image.src = src;
         image.classList.remove('is-changing');
+        group.remaining = group.remaining.length ? group.remaining : sources.filter(s => s !== src);
         return;
       }
     }
