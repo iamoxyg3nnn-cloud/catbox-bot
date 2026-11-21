@@ -318,6 +318,7 @@
     const bottomArtwork = document.createElement('img');
     bottomArtwork.className = 'legacy-artwork bottom-right-waifu home-artwork';
     // Show a random Catbox-style character on first paint; rotation uses the full set.
+    // We randomize immediately per load (below) so use an in-set default here.
     bottomArtwork.src = '/assets/catbox-qts/1363382418078.png';
     bottomArtwork.alt = '';
     bottomArtwork.setAttribute('aria-hidden', 'true');
@@ -345,64 +346,47 @@
     })).filter(group => group.sources.length > 1);
     if (!groups.length) return;
 
-    // Randomize the initial artwork per load (Catbox picks randomly on each visit).
-    await Promise.all(groups.map(async group => {
-      const choices = group.sources.filter(src => src !== group.image.getAttribute('src'));
-      if (!choices.length) return;
-      const src = choices[Math.floor(Math.random() * choices.length)];
-      const preload = new Image();
-      preload.src = src;
-      try { await preload.decode(); } catch { return; }
-      if (!group.image.isConnected) return;
-      group.image.src = src;
-      group.remaining = group.sources.filter(s => s !== src);
-    }));
-
+    // Rotate on reload only, after a randomized 2-3 reload window (not every reload, no timer).
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let timer;
-    let active = true;
-    let running = false;
-    const visible = () => active && !document.hidden;
-    const schedule = () => {
-      clearTimeout(timer);
-      if (visible()) timer = setTimeout(cycle, 10000);
-    };
-
-    async function rotate(group) {
+    await Promise.all(groups.map(async group => {
       const { image, sources } = group;
-      if (!group.remaining.length) {
-        group.remaining = sources.filter(src => src !== image.getAttribute('src'));
+      const key = `mewpocket-waifu:v1:${image.classList.contains('bottom-right-waifu') ? 'bottomRight' : 'topLeft'}`;
+      let state = null;
+      try { state = JSON.parse(sessionStorage.getItem(key) || 'null'); } catch {}
+      const valid = state && typeof state.src === 'string' && sources.includes(state.src);
+      let nextSrc = valid ? state.src : (image.getAttribute('src') || sources[0]);
+      let count = valid && Number.isFinite(state.count) ? state.count + 1 : 1;
+      let threshold = valid && (state.threshold === 2 || state.threshold === 3) ? state.threshold : (2 + Math.floor(Math.random() * 2));
+      let shouldRotate = !valid || count >= threshold;
+
+      if (shouldRotate) {
+        const choices = sources.filter(src => src !== nextSrc);
+        if (choices.length) nextSrc = choices[Math.floor(Math.random() * choices.length)];
+        count = 1;
+        threshold = 2 + Math.floor(Math.random() * 2);
       }
-      while (group.remaining.length && visible() && image.isConnected) {
-        const index = Math.floor(Math.random() * group.remaining.length);
-        const [src] = group.remaining.splice(index, 1);
+
+      const apply = async (src, fade) => {
         const preload = new Image();
         preload.src = src;
-        try { await preload.decode(); }
-        catch { continue; }
-        if (!visible() || !image.isConnected) return;
-        if (!reducedMotion.matches) {
+        try { await preload.decode(); } catch { return false; }
+        if (!image.isConnected) return false;
+        if (fade && !reducedMotion.matches) {
           image.classList.add('is-changing');
           await new Promise(resolve => setTimeout(resolve, 500));
         }
-        if (visible() && image.isConnected) image.src = src;
+        if (image.isConnected) image.src = src;
         image.classList.remove('is-changing');
-        group.remaining = group.remaining.length ? group.remaining : sources.filter(s => s !== src);
-        return;
+        return true;
+      };
+
+      if (nextSrc !== image.getAttribute('src')) {
+        const ok = await apply(nextSrc, valid && shouldRotate);
+        if (!ok) nextSrc = image.getAttribute('src') || nextSrc;
       }
-    }
 
-    async function cycle() {
-      if (!visible() || running) return;
-      running = true;
-      try { await Promise.all(groups.map(rotate)); }
-      finally { running = false; schedule(); }
-    }
-
-    document.addEventListener('visibilitychange', schedule);
-    window.addEventListener('pagehide', () => { active = false; clearTimeout(timer); });
-    window.addEventListener('pageshow', () => { active = true; schedule(); });
-    cycle();
+      try { sessionStorage.setItem(key, JSON.stringify({ src: nextSrc, count, threshold })); } catch {}
+    }));
   }
 
   const pages = {

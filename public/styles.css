@@ -3288,12 +3288,13 @@ html[data-theme="light"] {
   object-position: top center;
 }
 .classic-home .legacy-artwork.bottom-right-waifu {
-  right: 12px;
-  bottom: 12px;
-  width: min(13vw, 156px);
-  height: min(27vh, 190px);
-  max-height: none;
-  object-position: bottom center;
+  right: 0;
+  bottom: -5px;
+  width: auto;
+  height: auto;
+  max-width: min(24vw, 260px);
+  max-height: min(55vh, 490px);
+  object-position: bottom right;
 }
 .classic-home .legacy-artwork.home-artwork { opacity: .84; }
 :root[data-theme="dark"] .classic-home .legacy-artwork.home-artwork { opacity: .9; }
@@ -3373,7 +3374,7 @@ html[data-theme="light"] {
   .catbox-home .classic-support { width:min(92%,560px); }
   .catbox-home .classic-notice { width:min(92%,560px); }
   .catbox-home .legacy-artwork.top-left-waifu { width:min(20vw,84px); max-height:18vh; }
-  .catbox-home .legacy-artwork.bottom-right-waifu { width:min(22vw,96px); max-height:20vh; }
+  .catbox-home .legacy-artwork.bottom-right-waifu { display:none; }
 }
 @media (max-width:420px) {
   .catbox-home .classic-nav { font-size:13px; gap:2px 8px; }
