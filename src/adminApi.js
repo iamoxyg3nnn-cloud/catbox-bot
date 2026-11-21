@@ -188,7 +188,10 @@ let consolePage = null;
 function consoleAsset() {
   if (consolePage) return consolePage;
   const file = path.join(__dirname, '..', 'public', 'admin.html');
-  const html = fs.readFileSync(file, 'utf8');
+  // The HTML parser normalizes CRLF/CR to LF before it computes CSP hashes or
+  // hands the text to the VM, so hash exactly what the browser sees. Serving
+  // the file verbatim would make every inline block fail on a CRLF checkout.
+  const html = fs.readFileSync(file, 'utf8').replace(/\r\n?/g, '\n');
   const scriptHashes = [];
   const styleHashes = [];
   for (const match of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)) {
