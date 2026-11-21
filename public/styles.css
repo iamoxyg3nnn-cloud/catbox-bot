@@ -3340,10 +3340,10 @@ html[data-theme="light"] {
 .catbox-home .legacy-footer a { color:var(--ui-link); }
 :root[data-theme="dark"] .catbox-home { background:transparent; color:var(--foreground); }
 :root[data-theme="dark"] .catbox-home .classic-support,:root[data-theme="dark"] .catbox-home .classic-notice { border-color:var(--border); background:var(--card); }
-:root[data-theme="dark"] .catbox-home .dropzone { border-color:var(--upload-border); background:var(--upload-surface); color:var(--card-foreground); }
-:root[data-theme="dark"] .catbox-home .dropzone:hover,:root[data-theme="dark"] .catbox-home .dropzone.is-dragging { border-color:var(--ring); background:var(--upload-hover); }
+:root[data-theme="dark"] .catbox-home .dropzone { border-color:var(--upload-border); background:var(--card); color:var(--foreground); }
+:root[data-theme="dark"] .catbox-home .dropzone:hover,:root[data-theme="dark"] .catbox-home .dropzone.is-dragging { border-color:var(--ring); background:color-mix(in oklch, var(--card) 82%, var(--accent)); }
 :root[data-theme="dark"] .catbox-home .dropzone-title { color:var(--foreground); }
-:root[data-theme="dark"] .catbox-home .dropzone-hint { color:var(--muted-foreground); }
+:root[data-theme="dark"] .catbox-home .dropzone-hint { color:var(--card-foreground); }
 :root[data-theme="dark"] .catbox-home .dropzone:focus-within { outline-color:var(--ring); }
 .catbox-home .legacy-artwork { display:block; z-index:0; pointer-events:none; }
 .catbox-home .classic-main > :not(.legacy-artwork) { position:relative; z-index:1; }
