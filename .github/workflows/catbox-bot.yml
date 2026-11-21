@@ -15,8 +15,9 @@ name: Catbox Bot (Supabase metadata)
 # is the only trigger. Each run queues its own successor, which waits in the
 # catbox-session group and starts the moment this run ends, so the bot stays up
 # 24/7 by chaining rather than by a timer. The successor always runs the
-# default branch. A full keep-alive resets the retry counter; repeated failures
-# are retried 5 links, then the chain stops and alerts instead of looping.
+# default branch. A full keep-alive resets the retry counter; unhealthy runs
+# keep retrying/chaining automatically so the control plane can recover without
+# manual intervention.
 
 on:
   workflow_dispatch:
@@ -50,8 +51,8 @@ jobs:
       - name: Queue the next session (early insurance)
         # Runs before the bot so a session lost later (dead runner, cancel,
         # timeout) still has a successor waiting. Queued pessimistically as a
-        # retry; the end-of-run step replaces it with a reset counter when the
-        # session is healthy.
+        # retry; the end-of-run step queues a reset counter when the session is
+        # healthy. Always queues so the chain can auto-recover/restart.
         if: always()
         shell: pwsh
         env:
@@ -60,14 +61,10 @@ jobs:
         run: |
           $n = 0
           if ($env:TRIGGERED_BY -match '^session-chain:(\d{1,9})$') { $n = [int]$Matches[1] }
-          $maxRetries = 5
-          if (($n + 1) -gt $maxRetries) {
-            Write-Host "Retry budget spent ($n/$maxRetries) - not queueing."
-            exit 0
-          }
+          $next = $n + 1
           $body = @{
             ref = $env:CHAIN_REF
-            inputs = @{ triggered_by = "session-chain:$($n + 1)" }
+            inputs = @{ triggered_by = "session-chain:$next" }
           } | ConvertTo-Json -Compress -Depth 5
           $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches"
           $headers = @{
@@ -78,7 +75,7 @@ jobs:
           foreach ($attempt in 1..3) {
             try {
               Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
-              Write-Host "Successor queued for $env:CHAIN_REF (retry $($n + 1)/$maxRetries)."
+              Write-Host "Successor queued for $env:CHAIN_REF (attempt $next)."
               exit 0
             } catch {
               Write-Warning "Dispatch attempt $attempt failed: $($_.Exception.Message)"
@@ -516,8 +513,9 @@ jobs:
           if-no-files-found: ignore
 
       - name: Queue the next session (session end)
-        # Healthy full keep-alive resets the counter; anything else counts up,
-        # and once the budget is spent the chain stops with an alert.
+        # Healthy full keep-alive resets the counter; unhealthy runs still queue
+        # the next session so the chain auto-recovers/restarts without manual
+        # intervention (no separate queue workflow/schedule).
         if: always()
         shell: pwsh
         env:
@@ -527,45 +525,43 @@ jobs:
         run: |
           $n = 0
           if ($env:TRIGGERED_BY -match '^session-chain:(\d{1,9})$') { $n = [int]$Matches[1] }
-          $maxRetries = 5
           $next = $n + 1
           if ($env:SESSION_COMPLETE -eq 'true') { $next = 0 }
 
-          $stopReason = ''
-          if ($next -gt $maxRetries) {
-            $stopReason = "$n sessions in a row ended early or never started"
-          } else {
-            $body = @{
-              ref = $env:CHAIN_REF
-              inputs = @{ triggered_by = "session-chain:$next" }
-            } | ConvertTo-Json -Compress -Depth 5
-            $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches"
-            $headers = @{
-              Authorization = "Bearer $env:GH_TOKEN"
-              Accept = 'application/vnd.github+json'
-              'X-GitHub-Api-Version' = '2022-11-28'
-            }
-            $queued = $false
-            foreach ($attempt in 1..3) {
-              try {
-                Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
-                $queued = $true
-                break
-              } catch {
-                Write-Warning "Dispatch attempt $attempt failed: $($_.Exception.Message)"
-                if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
-              }
-            }
-            if ($queued) {
-              Write-Host "Successor queued for $env:CHAIN_REF (retry $next/$maxRetries)."
-              exit 0
-            }
-            $stopReason = 'GitHub refused the dispatch (see warnings above)'
+          if ($next -gt 0 -and $next -gt 5) {
+            Write-Warning "::warning::$n consecutive unhealthy sessions; continuing to auto-retry."
           }
 
-          Write-Error "::error::Session chain stopped: $stopReason. Bot is down until a run is started."
+          $body = @{
+            ref = $env:CHAIN_REF
+            inputs = @{ triggered_by = "session-chain:$next" }
+          } | ConvertTo-Json -Compress -Depth 5
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml/dispatches"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $queued = $false
+          foreach ($attempt in 1..3) {
+            try {
+              Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+              $queued = $true
+              break
+            } catch {
+              Write-Warning "Dispatch attempt $attempt failed: $($_.Exception.Message)"
+              if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+            }
+          }
+          if ($queued) {
+            if ($next -eq 0) { Write-Host "Healthy session complete; successor queued for $env:CHAIN_REF (counter reset)." }
+            else { Write-Host "Successor queued for $env:CHAIN_REF (auto-retry attempt $next)." }
+            exit 0
+          }
+
+          Write-Error "::error::Could not queue next session from end step after retries; insurance successor may still keep the chain alive."
           if (-not [string]::IsNullOrWhiteSpace($env:ALERT_WEBHOOK_URL)) {
-            $content = ":warning: **catbox-bot** session chain stopped: $stopReason. Start a run: https://github.com/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml"
+            $content = ":warning: **catbox-bot** end-step dispatch failed after retries (auto-retry attempt $next). Check: https://github.com/$env:GITHUB_REPOSITORY/actions/workflows/catbox-bot.yml"
             $payload = @{ content = $content } | ConvertTo-Json -Compress
             try {
               Invoke-RestMethod -Method Post -Uri $env:ALERT_WEBHOOK_URL -ContentType 'application/json' -Body $payload | Out-Null
