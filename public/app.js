@@ -282,7 +282,7 @@
     : path.startsWith('/a/') ? 'album'
     : 'notfound';
   const header = () => `<header class="legacy-page-header"><a class="home-button" href="/">Home</a></header>`;
-  const footer = () => `<footer class="legacy-footer"><a href="/faq.php">FAQ</a><a href="/legal.php">Terms & privacy</a><a href="/contact.php">Contact</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button></footer>`;
+  const footer = () => `<footer class="legacy-footer"><a href="/faq.php">FAQ</a><a href="/legal.php">Terms & privacy</a><a href="/contact.php">Contact</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Dark theme</button></footer>`;
   const shell = (active, content) => `<div class="classic-dashboard">${header()}<main id="main" class="legacy-content account-layout"><nav class="account-nav" aria-label="Account navigation"><span class="account-identity"><span class="account-avatar" data-avatar aria-hidden="true"></span><span>Signed in as <strong data-username></strong></span></span><a href="/user/index.php" ${active === 'library' ? 'aria-current="page"' : ''}>My files</a><a href="/user/albums.php" ${active === 'albums' ? 'aria-current="page"' : ''}>Albums</a><a href="/user/index.php#library-upload-panel" class="account-upload">Upload</a><button type="button" class="account-logout" data-logout>Sign out</button></nav><section class="legacy-user-panel">${content}</section></main>${footer()}</div>`;
 
 
@@ -293,14 +293,15 @@
     const accountLinks = signedIn
       ? '<a href="/user/index.php">My files</a><a href="/user/albums.php">Albums</a>'
       : '<a href="/user/login.php">Sign in</a><a href="/user/register.php">Create account</a>';
-    const links = `${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Legal / Privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button>`;
+    const links = `${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Legal / Privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Dark theme</button>`;
     return `<div class="classic-home ${temporary ? 'is-temporary' : ''}"><main id="main" class="classic-main"><section class="classic-uploader" aria-label="Upload a file"><div class="upload-panel" id="panel-file"><label class="dropzone" id="dropzone" for="file-input"><input class="file-picker" id="file-input" type="file" multiple aria-label="Select one or more files to upload"><span class="dropzone-title">Select or drop a file</span><span class="dropzone-hint">or tap to choose from your device · 20 MB max</span><span class="upload-file-name" id="file-name"></span></label></div><div class="urlUploads"><p><button class="classic-link" id="tab-url" type="button" aria-expanded="false" aria-controls="url-form">Upload via URL</button></p><form class="url-form" id="url-form" hidden><label class="field-label" for="file-url">Paste a direct file link</label><div class="url-input-row"><input class="field" id="file-url" name="url" type="url" placeholder="https://example.com/file.png" required><button class="classic-go" type="submit">Upload</button></div><button class="classic-link" id="tab-file-return" type="button" aria-expanded="false">Choose a file instead</button></form></div>${temporary ? '<div class="classic-expiry"><label for="expiry">Remove after</label><select id="expiry" class="select-small"><option value="1h">1 hour</option><option value="12h">12 hours</option><option value="24h" selected>24 hours</option><option value="72h">72 hours</option></select><small class="field-hint">The link works until this time, then the file is removed.</small></div>' : ''}<div class="upload-status" id="upload-status" role="status" aria-live="polite"></div><div class="progress-track" id="progress-track" hidden><span id="progress-bar"></span></div><div id="upload-result"></div></section><nav class="classic-nav" aria-label="Main navigation">${accountLinks}<a href="/faq.php">FAQ</a><a href="/tools.php">Tools</a><a href="/legal.php">Terms &amp; privacy</a><a href="/contact.php">Contact</a><a href="/litterbox.php">Temporary uploads</a><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false">Go Dark?</button></nav><details class="mobile-nav"><summary>Menu</summary><nav aria-label="Mobile navigation">${links}</nav></details><section class="classic-support"><p><strong>Simple file sharing, with clear limits.</strong></p><div class="classic-support-links"><a href="/faq.php">How uploads work</a><a href="/tools.php">Upload options</a><a href="/user/register.php">Create an account</a></div><div class="classic-support-bar"><span>Up to 20 MB · No account required</span></div></section><section class="classic-notice"><b>Need a temporary link?</b><br><a href="/litterbox.php">Use temporary uploads</a> to choose when the file expires.</section><p class="classic-privacy-note">${temporary ? 'Anyone with a temporary link can open the file until it expires.' : 'Anyone with a file link can open it. Sign in before uploading if you want to manage the file later.'}</p><footer class="legacy-footer"><a href="/contact.php">Contact</a></footer></main></div>`;
   }
 
   function initHomeLayout() {
     const home = $('.classic-home');
+    if (!home) return;
     const main = $('.classic-main', home);
-    if (!home || !main) return;
+    if (!main) return;
 
     home.classList.add('catbox-home');
 
@@ -1141,9 +1142,11 @@
     const dark = document.documentElement.dataset.theme === 'dark';
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#221d27' : '#f3edf7');
     $$('[data-theme-toggle]').forEach(toggle => {
-      toggle.textContent = dark ? 'Lights on!' : 'Go Dark?';
+      // Keep the accessible name equal to the visible label; aria-pressed
+      // communicates the on/off state without a mismatched aria-label.
+      toggle.textContent = 'Dark theme';
       toggle.setAttribute('aria-pressed', String(dark));
-      toggle.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+      toggle.removeAttribute('aria-label');
     });
   }
 

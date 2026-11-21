@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Catbox — operations</title>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="Aggregate MewPocket node metrics: Discord rate limit, staging disk, upload queue and journal backlog.">
+  <title>MewPocket — operations</title>
   <style>
     :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
     body { margin: 0 auto; padding: 24px; max-width: 1000px; background: #11151c; color: #dce4ee; }
@@ -24,7 +26,8 @@
   </style>
 </head>
 <body>
-  <h1>Catbox operations</h1>
+  <main>
+  <h1>MewPocket operations</h1>
   <p class="sub">Aggregate counters only — no tokens, filenames or user data. Refreshes every 5 seconds.</p>
 
   <div class="grid">
@@ -43,11 +46,13 @@
   </div>
 
   <footer id="foot">Waiting for /api/metrics…</footer>
+  </main>
 
   <script src="/cdn-rotation.js?v=mewpocket-hybrid-1" defer></script>
   <script>
     const history = { rate: [], disk: [] };
     const el = id => document.getElementById(id);
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
     function sparkline(canvas, values, color) {
       const ctx = canvas.getContext('2d');
@@ -88,14 +93,14 @@
         sparkline(el('diskChart'), history.disk, '#60a5fa');
 
         el('nodes').innerHTML = (m.nodes || []).map(n => `<tr>
-          <td>${n.id}</td>
-          <td class="status-${n.status === 'up' ? 'up' : 'down'}">${n.status}</td>
-          <td>${n.pending || 0}</td><td>${n.active || 0}</td>
-          <td>${((n.stagedBytes || 0) / 1048576).toFixed(1)} MiB</td>
-          <td>${n.lastHeartbeat ? new Date(n.lastHeartbeat).toLocaleTimeString() : '—'}</td>
+          <td>${esc(n.id)}</td>
+          <td class="status-${n.status === 'up' ? 'up' : 'down'}">${esc(n.status)}</td>
+          <td>${Number(n.pending) || 0}</td><td>${Number(n.active) || 0}</td>
+          <td>${((Number(n.stagedBytes) || 0) / 1048576).toFixed(1)} MiB</td>
+          <td>${n.lastHeartbeat ? esc(new Date(n.lastHeartbeat).toLocaleTimeString()) : '—'}</td>
         </tr>`).join('') || '<tr><td colspan="6">No nodes registered</td></tr>';
         el('foot').textContent = `backend: ${m.backend} · storage: ${m.storage} · uptime: ${m.uptimeSeconds}s`;
-        document.title = `Catbox ops — ${d.rateLimitPct || 0}% 429`;
+        document.title = `MewPocket ops — ${d.rateLimitPct || 0}% 429`;
       } catch (err) {
         el('foot').textContent = `Metrics unavailable: ${err.message}`;
       }

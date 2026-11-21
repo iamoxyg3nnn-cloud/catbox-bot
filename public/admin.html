@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <meta name="theme-color" content="#0b1020">
+  <meta name="description" content="Operator console for MewPocket: file views, storage nodes, cleanup jobs and moderation actions.">
   <title>Control room · MewPocket</title>
   <link rel="icon" type="image/svg+xml" href="/assets/mewpocket.svg?v=2">
   <style>
@@ -159,7 +160,7 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <div id="loginView" class="login-wrap">
+  <main id="loginView" class="login-wrap">
     <form id="loginForm" class="login-card" novalidate>
       <h1>Control room</h1>
       <p>Operator access to MewPocket. Sign in with an admin account, or use a token to get a short-lived, HttpOnly operator cookie.</p>
@@ -178,7 +179,7 @@
       <p id="mfaError" class="error" role="alert"></p>
       <button class="btn primary" type="submit">Verify</button>
     </form>
-  </div>
+  </main>
 
   <div id="appView" hidden>
     <header class="topbar">

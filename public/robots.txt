@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /api/
+Disallow: /user/
+Disallow: /files/
+Disallow: /i/
+Disallow: /ops
+Disallow: /litterbox/api.php
+
+Sitemap: https://mew-pocket.vercel.app/sitemap.xml
